@@ -2,8 +2,7 @@
   kernel-verified caller identification and `/proc` for process context
   (command line, ancestry, environment, PID namespaces).  macOS has
   equivalent APIs (`LOCAL_PEERPID`, `KERN_PROCARGS2`, `proc_pidinfo`)
-  that enable a near-complete port — see
-  [macOS support](docs/macos-support.md) for the full analysis.
+  that enable a near-complete port.
 - **OpenSSH 8.9+** — required for `session-bind@openssh.com`, which
   enables forwarded agent detection and the `ssh_dest`,
   `is_in_known_hosts`, and `is_forwarded` policy fields.

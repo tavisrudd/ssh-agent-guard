@@ -33,7 +33,7 @@ authenticate as you — ssh-agent-guard closes that gap.
   the socket from other users but not same-user processes.  Linux
   provides kernel-enforced per-process isolation (Landlock, systemd
   sandboxing, AppArmor/SELinux, mount namespaces) that can close this
-  gap.  See the [system setup](system-setup.md) section for details.
+  gap.  See the SYSTEM SETUP section.
 - **Root compromise** — a root-level attacker can read any socket,
   ptrace any process, and bypass all user-level controls.
 - **TOCTOU** (time-of-check-time-of-use) — caller identity is gathered

@@ -334,3 +334,6 @@ state during initial setup).
 # SEE ALSO
 
 **ssh-agent-guard**(1), **yaml**(1), **glob**(7)
+
+The source repository contains a detailed policy guide with worked
+examples in *docs/policy-guide.md*.

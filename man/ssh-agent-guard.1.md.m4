@@ -253,3 +253,8 @@ touch ~/.local/state/ssh-ag/confirm/denied
 # SEE ALSO
 
 **ssh-agent-guard-policy**(5), **ssh-agent**(1), **gpg-agent**(1), **ssh**(1)
+
+The source repository contains additional documentation in the *docs/*
+directory: caller identification internals, forwarding detection,
+policy examples, threat model discussion, defense in depth, and macOS
+porting analysis.

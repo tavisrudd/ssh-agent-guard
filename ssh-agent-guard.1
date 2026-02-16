@@ -191,8 +191,11 @@ to structured YAML files and journald.
 .IP \(bu 2
 \fBSame-user socket access\fP (without system hardening) — by default,
 any process running as your user can connect directly to the upstream
-agent socket, bypassing the proxy entirely.  See the system setup
-section for filesystem-level protections that close this gap.
+agent socket, bypassing the proxy entirely.  A 0700 directory hides
+the socket from other users but not same-user processes.  Linux
+provides kernel-enforced per-process isolation (Landlock, systemd
+sandboxing, AppArmor/SELinux, mount namespaces) that can close this
+gap.  See the SYSTEM SETUP section.
 .IP \(bu 2
 \fBRoot compromise\fP — a root-level attacker can read any socket,
 ptrace any process, and bypass all user-level controls.
@@ -249,8 +252,8 @@ The upstream agent socket must be inaccessible to normal processes.
 \fBSSH_AUTH_SOCK\fR must point to the proxy's listen socket.
 
 .SS Socket protection with filesystem permissions
-The strongest user-level approach uses directory permissions to hide the
-upstream socket:
+The simplest approach uses directory permissions to hide the upstream
+socket:
 
 .EX
 # Create a restricted directory for the real agent socket
@@ -270,12 +273,63 @@ export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent-guard.sock"
 .EE
 
 .PP
-Other processes cannot traverse the restricted directory to reach the
-real socket.
+\fBLimitation:\fP The 0700 directory prevents other \fIusers\fP from
+reaching the socket, but any process running as your UID can still
+traverse it.  The practical defense here is obscurity: processes use
+\fBSSH_AUTH_SOCK\fR (pointing to the proxy) and don't know the upstream
+path.  For stronger per-process isolation, see below.
 
 .PP
 \fBNote:\fP This does not protect against root or processes with
 CAP_DAC_READ_SEARCH.
+
+.SS Stronger isolation with Linux sandboxing
+Linux provides several mechanisms to enforce per-process access
+control on the upstream socket, without requiring a separate user:
+
+.PP
+\fBLandlock\fP (Linux 5.13+) — an unprivileged LSM that lets a process
+restrict its own filesystem access.  An untrusted process (or its
+launcher) can drop access to the upstream socket directory before
+executing.  No root required, no policy files — just syscalls.
+
+.PP
+\fBsystemd sandboxing\fP — user service units support
+\fBInaccessiblePaths=\fR which makes paths invisible to that service.
+If you run AI tools or other untrusted software as systemd user
+services, this is the easiest approach:
+
+.EX
+# ~/.config/systemd/user/untrusted-tool.service
+[Service]
+ExecStart=/usr/bin/some-ai-tool
+InaccessiblePaths=/run/user/1000/agent-upstream
+.EE
+
+.PP
+\fBAppArmor / SELinux\fP — mandatory access control policies can
+restrict which executables or confined domains can access specific
+paths.  AppArmor is common on Ubuntu/Debian; SELinux on Fedora/RHEL.
+
+.PP
+\fBMount namespaces\fP — \fBunshare -m\fR creates a private mount namespace
+where the upstream socket directory can be bind-mounted over or
+unmounted entirely.  The guard runs in the host namespace; untrusted
+processes run in a restricted namespace where the upstream socket
+simply doesn't exist:
+
+.EX
+# Run an untrusted process without access to the upstream socket
+unshare -m sh -c \\
+    'umount "$XDG_RUNTIME_DIR/agent-upstream" 2>/dev/null; exec "$@"' \\
+    -- some-untrusted-tool
+.EE
+
+.PP
+These mechanisms range from lightweight (Landlock, systemd directives)
+to comprehensive (SELinux, mount namespaces).  The 0700 directory is a
+reasonable baseline; the above provide kernel-enforced per-process
+isolation.
 
 .SS Minimal setup (without socket protection)
 If you don't need hard isolation, simply interpose the proxy on the
@@ -342,11 +396,11 @@ Hashed entries (\fBHashKnownHosts\fP) are skipped (irreversible by design).
 
 .SH REQUIREMENTS
 .IP \(bu 2
-\fBLinux only\fP — uses \fBSO_PEERCRED(7)\fR for kernel-verified caller
-identification and \fB/proc\fR for process context (command line, ancestry,
-environment, PID namespaces).  No macOS or BSD equivalent exists for
-these interfaces.  On macOS, \fBssh-add -c\fR provides basic per-operation
-confirmation without caller identification.
+\fBLinux only\fP (macOS support planned) — uses \fBSO_PEERCRED(7)\fR for
+kernel-verified caller identification and \fB/proc\fR for process context
+(command line, ancestry, environment, PID namespaces).  macOS has
+equivalent APIs (\fBLOCAL_PEERPID\fR, \fBKERN_PROCARGS2\fR, \fBproc_pidinfo\fR)
+that enable a near-complete port.
 .IP \(bu 2
 \fBOpenSSH 8.9+\fP — required for \fBsession-bind@openssh.com\fR, which
 enables forwarded agent detection and the \fBssh_dest\fR,
@@ -527,3 +581,9 @@ touch ~/.local/state/ssh-ag/confirm/denied
 
 .SH SEE ALSO
 \fBssh-agent-guard-policy\fP(5), \fBssh-agent\fP(1), \fBgpg-agent\fP(1), \fBssh\fP(1)
+
+.PP
+The source repository contains additional documentation in the \fIdocs/\fP
+directory: caller identification internals, forwarding detection,
+policy examples, threat model discussion, defense in depth, and macOS
+porting analysis.

@@ -7,19 +7,16 @@ changequote([[[,]]])dnl
 **Any process running as your user can silently use your SSH keys** —
 to open connections, push to your repos, or authenticate as you to any
 server.  The SSH agent protocol doesn't verify *who* is asking, *where*
-they're connecting, or *why* — every request is a blank check.  As the
-ssh(1) man page warns: an attacker "cannot obtain key material from the
-agent, however they can perform operations on the keys that enable them
-to authenticate using the identities loaded into the agent."  Even
+they're connecting, or *why* — every request is a blank check.  Even
 hardware keys that can't be extracted can still be used by anyone who
 can reach the socket.
 
 ssh-agent-guard is a proxy that sits between SSH clients and your real
 agent, giving you visibility and control over every key operation.
-It identifies the connecting process, evaluates YAML policy rules, and
-can optionally require physical YubiKey confirmation — so you know
-exactly what's using your keys. No YubiKey? The proxy still identifies
-callers, enforces policy, and logs everything.
+It identifies the connecting process, evaluates policy rules, and
+can optionally require physical YubiKey confirmation for sensitive
+operations.  No YubiKey?  The proxy still identifies callers, enforces
+policy, and logs everything.
 
 ### Who should use this
 
@@ -34,23 +31,25 @@ incidents and risk framework references.
 
 ## Features
 
-- **Know who's using your keys** — see the exact process, its parent
-  chain, working directory, and environment for every key operation
-  ([how it works](docs/caller-identification.md))
-- **Write precise policies** — YAML rules that distinguish AI tools
-  from git, restrict forwarded agents by destination, and match on
-  process name, ancestry, container status, and more
+- **Know who's using your keys** — catch malicious scripts and
+  misbehaving tools before they authenticate or push code
+  (process name, ancestry, env, working directory —
+  [how it works](docs/caller-identification.md))
+- **Write precise policies** — allow git to push without interruption,
+  require confirmation for AI tools, block forwarded agents from
+  reaching unknown hosts
   ([policy guide](docs/policy-guide.md))
 - **Require physical confirmation** — YubiKey touch for local sessions,
   PIN entry via tmux popup for remote sessions (optional)
-- **Prevent forwarded agent abuse** — detect when a remote host tries
-  to use your keys for destinations you didn't intend
+- **Prevent forwarded agent abuse** — stop a compromised remote host
+  from using your keys to pivot to other systems
   ([how detection works](docs/forwarding.md))
-- **See everything** — live status in your i3status-rs or tmux
-  status bar as operations happen, plus structured YAML logs and
-  journald with full caller context
-- **Block key tampering** — add, remove, lock, and unlock operations are
-  unconditionally denied, by design
+- **See everything** — live status bar updates as keys are used,
+  plus structured logs you can grep, alert on, or audit later
+  (YAML files + journald)
+- **Block key tampering** — prevent malware from loading its own keys
+  onto your agent or removing yours
+  (add/remove/lock/unlock unconditionally denied)
 
 ### Example policy
 
@@ -85,54 +84,9 @@ rules:
 
 Rules are evaluated top-to-bottom; first match wins. All fields in a
 match section must match (AND logic). Omitted fields match anything.
-See **ssh-agent-guard-policy(5)** for the full list of match fields.
-
-### How it compares
-
-| | ssh-agent-guard | `ssh-add -c` | ssh-agent-filter |
-|---|---|---|---|
-| Per-operation confirmation | Yes (YubiKey touch/PIN) | Yes (askpass dialog) | No |
-| Caller identification | Full (process, ancestry, env) | None | None |
-| Policy rules | YAML, flexible match fields | None | Key fingerprint only |
-| Audit logging | Structured YAML + journald | None | None |
-| Forwarded agent detection | Yes ([session-bind](docs/forwarding.md)) | No | No |
-
-The key differentiator is caller identification — instead of a generic
-"allow this operation?" prompt, you can write rules like "allow git to
-connect to github.com, require confirmation for AI tools, deny
-everything forwarded to unknown hosts."
-
-**`ssh-add -c`** prompts for every operation identically — it can't
-distinguish `git push` from a malicious script.  You either confirm
-everything or nothing.
-
-**ssh-agent-filter** controls which keys are *visible* per connection
-but can't restrict *who uses them* or *where they connect*.  The two
-tools are complementary: filter which keys are exposed, then guard
-who can use each one.
-
-**guardian-agent** (Stanford) is the closest in ambition — it verifies
-destinations for forwarded sessions — but requires a patched OpenSSH
-and is unmaintained.  ssh-agent-guard works with stock OpenSSH via
-`session-bind@openssh.com`.
-
-**OpenSSH destination constraints** (`ssh-add -h`, 8.9+) restrict
-keys to specific hosts at the protocol level.  A significant
-improvement, but limited to SSH authentication (not git signing or
-age decryption), must be configured per-key at load time, and
-cannot distinguish callers.
-
-**Hardware keys** (YubiKey FIDO2, Secure Enclave) protect key material
-from extraction, but any process that can reach the agent socket can
-still use them.  ssh-agent-guard adds the missing access control layer.
-
-See [defense in depth](docs/defense-in-depth.md) for how these
-layers work together.
-
-See also: [guardian-agent](https://github.com/StanfordSNR/guardian-agent),
-[ssh-agent-filter](https://github.com/tiwe-de/ssh-agent-filter),
-[sshield](https://github.com/gotlougit/sshield),
-[Secretive](https://github.com/maxgoedjen/secretive).
+If no policy file exists, the proxy defaults to **confirm** for all
+requests.  See **ssh-agent-guard-policy(5)** for the full list of match
+fields.
 
 ## Quick start
 
@@ -252,6 +206,82 @@ up to 20 seconds for you to tap the key.  Touch takes ~1 second.
 tmux popup appears asking for your PIN.  Enter it to approve, or
 press the deny keybinding (bound to `ssh-ag-deny`) to reject.
 
+## Day-to-day experience
+
+**How often are you interrupted?** Only when a `confirm` rule
+matches.  With a typical policy (allow git hosts, confirm AI tools,
+deny forwarded-to-unknown), most key use is silent and instant.
+
+- **Touch confirmation** takes ~1 second (tap YubiKey, done).
+- **PIN confirmation** takes a few seconds (tmux popup, type PIN).
+- **Denied requests** fail immediately -- SSH reports "agent refused
+  operation" and you move on.
+- **Policy changes** take effect instantly via inotify -- no restart,
+  no reconnect.
+
+If you just want visibility without interruptions, set
+`default_action: allow` with no `confirm` rules.  Every key
+operation is still logged with full caller context.
+
+### How it compares
+
+|                         | ssh-agent-guard | `ssh-add -c` | ssh-agent-filter | `ssh-add -h` (8.9+) |
+|-------------------------|-----------------|--------------|------------------|----------------------|
+| Caller identification   | Full ¹          | None         | None             | None                 |
+| Per-operation confirm   | Yes ²           | Yes ³        | No               | No                   |
+| Policy rules            | Yes ⁴           | None         | Key fingerprint  | Host allowlist       |
+| Destination restriction | Yes             | No           | No               | Yes (built-in)       |
+| Forwarded agent detect  | Yes ⁵           | No           | No               | Yes (protocol-level) |
+| Scope                   | All key use ⁶   | All key use  | All key use      | SSH auth only        |
+| Audit logging           | Yes ⁷           | None         | None             | None                 |
+
+¹ Process name, ancestry, environment, working directory —
+[how it works](docs/caller-identification.md).
+² YubiKey HMAC touch (local) or PIN via tmux popup (remote).
+³ SSH askpass dialog, no caller context.
+⁴ Glob/regex on process, destination, environment, ancestry, and more —
+[policy guide](docs/policy-guide.md).
+⁵ Via [session-bind@openssh.com](docs/forwarding.md) (OpenSSH 8.9+).
+⁶ SSH authentication, git commit signing, age encryption.
+⁷ Structured YAML files + journald, with full caller context.
+
+The key differentiator is caller identification — instead of a generic
+"allow this operation?" prompt, you can write rules like "allow git to
+connect to github.com, require confirmation for AI tools, deny
+everything forwarded to unknown hosts."
+
+**`ssh-add -c`** prompts for every operation identically — it can't
+distinguish `git push` from a malicious script.  You either confirm
+everything or nothing.
+
+**ssh-agent-filter** controls which keys are *visible* per connection
+but can't restrict *who uses them* or *where they connect*.  The two
+tools are complementary: filter which keys are exposed, then guard
+who can use each one.
+
+**guardian-agent** (Stanford) is the closest in ambition — it verifies
+destinations for forwarded sessions — but requires a patched OpenSSH
+and is unmaintained.  ssh-agent-guard works with stock OpenSSH via
+`session-bind@openssh.com`.
+
+**OpenSSH destination constraints** (`ssh-add -h`, 8.9+) restrict
+keys to specific hosts at the protocol level.  A significant
+improvement, but limited to SSH authentication (not git signing or
+age decryption), must be configured per-key at load time, and
+cannot distinguish callers.
+
+**Hardware keys** (YubiKey FIDO2, Secure Enclave) protect key material
+from extraction, but any process that can reach the agent socket can
+still use them.  ssh-agent-guard adds the missing access control layer.
+
+See [defense in depth](docs/defense-in-depth.md) for how these
+layers work together.
+
+See also: [guardian-agent](https://github.com/StanfordSNR/guardian-agent),
+[ssh-agent-filter](https://github.com/tiwe-de/ssh-agent-filter),
+[sshield](https://github.com/gotlougit/sshield),
+[Secretive](https://github.com/maxgoedjen/secretive).
+
 ## System setup
 
 include([[[docs/system-setup.md]]])
@@ -283,26 +313,11 @@ systemctl --user enable --now ssh-agent-guard
 - **ssh-ag-render-status** — status bar renderer for i3status-rs
   (pango markup) and tmux (user option `@ssh_ag_status`)
 
-## Day-to-day experience
-
-**How often are you interrupted?** Only when a `confirm` rule
-matches.  With a typical policy (allow git hosts, confirm AI tools,
-deny forwarded-to-unknown), most key use is silent and instant.
-
-- **Touch confirmation** takes ~1 second (tap YubiKey, done).
-- **PIN confirmation** takes a few seconds (tmux popup, type PIN).
-- **Denied requests** fail immediately -- SSH reports "agent refused
-  operation" and you move on.
-- **Policy changes** take effect instantly via inotify -- no restart,
-  no reconnect.
-
-If you just want visibility without interruptions, set
-`default_action: allow` with no `confirm` rules.  Every key
-operation is still logged with full caller context.
-
 ## Requirements
 
 include([[[docs/requirements.md]]])
+See [macOS support](docs/macos-support.md) for the full porting
+analysis.
 
 ## YubiKey setup
 
