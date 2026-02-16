@@ -301,6 +301,28 @@ func (p *matchPattern) matchString(value string) bool {
 	return globMatch(p.raw, value)
 }
 
+// matchSSHDest matches an ssh_dest value against a pattern with hostname
+// semantics: if the pattern doesn't contain '@', it matches against the
+// hostname portion only (stripping any user@ prefix from the value).
+// This means "github.com" matches both "github.com" (from session-bind)
+// and "git@github.com" (from command line parsing).
+// Patterns containing '@' match the full value as-is.
+func matchSSHDest(p *matchPattern, value string) bool {
+	if p == nil {
+		return true // unset = wildcard
+	}
+	// If the pattern contains @, match against the full user@host value.
+	if strings.Contains(p.raw, "@") {
+		return p.matchString(value)
+	}
+	// Pattern has no @ — match against hostname only.
+	host := value
+	if idx := strings.Index(value, "@"); idx >= 0 {
+		host = value[idx+1:]
+	}
+	return p.matchString(host)
+}
+
 // globMatch implements simple glob matching with * and ?.
 func globMatch(pattern, value string) bool {
 	return deepGlob(pattern, value)
@@ -402,7 +424,7 @@ func (p *Policy) Load() LoadResult {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	config := &PolicyConfig{DefaultAction: "allow"}
+	config := &PolicyConfig{}
 
 	data, err := os.ReadFile(p.path)
 	if err != nil {
@@ -430,6 +452,22 @@ func (p *Policy) Load() LoadResult {
 	decoder.KnownFields(true)
 	if err := decoder.Decode(config); err != nil {
 		errMsg := sanitizeYAMLError(err.Error())
+		log.Printf("policy: %s: %s (keeping previous)", p.path, errMsg)
+		badHash := sha256.Sum256(data)
+		return LoadResult{
+			OK:           false,
+			Errors:       []string{errMsg},
+			BadConfigSHA: fmt.Sprintf("%x", badHash),
+			BadContent:   string(data),
+		}
+	}
+
+	// Require default_action to prevent accidental allow-all policies.
+	// Without a policy file, the proxy defaults to confirm-all (safe).
+	// A policy file that omits default_action would silently default to allow,
+	// which is a dangerous footgun — reject it with a clear error.
+	if config.DefaultAction == "" {
+		errMsg := "default_action is required (set to allow, deny, or confirm)"
 		log.Printf("policy: %s: %s (keeping previous)", p.path, errMsg)
 		badHash := sha256.Sum256(data)
 		return LoadResult{
@@ -480,6 +518,10 @@ func (p *Policy) Load() LoadResult {
 			match:  match,
 		})
 	}
+	// Check for shadowed ssh_dest rules: a user@host rule after a blanket
+	// host rule will never match because the hostname-only rule matches first.
+	compileErrors = append(compileErrors, checkSSHDestShadowing(config.Rules, rules, ruleLines)...)
+
 	if len(compileErrors) > 0 {
 		log.Printf("policy: %s: %d compile error(s) (keeping previous)", p.path, len(compileErrors))
 		for _, e := range compileErrors {
@@ -662,7 +704,7 @@ func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, ke
 	if sshDest == "" && session != nil {
 		sshDest = session.DestHostname
 	}
-	if !m.sshDest.matchString(sshDest) {
+	if !matchSSHDest(m.sshDest, sshDest) {
 		return false
 	}
 
@@ -795,7 +837,7 @@ func (m *compiledMatch) checkMismatches(ctx *CallerContext, session *SessionBind
 	if sshDest == "" && session != nil {
 		sshDest = session.DestHostname
 	}
-	if !m.sshDest.matchString(sshDest) {
+	if !matchSSHDest(m.sshDest, sshDest) {
 		mm = append(mm, fmt.Sprintf("ssh_dest: want %q, got %q", m.sshDest.raw, sshDest))
 	}
 	if m.isInKnownHosts != nil {
@@ -850,6 +892,117 @@ func stringInList(s string, list []string) bool {
 		}
 	}
 	return false
+}
+
+// checkSSHDestShadowing detects user@host rules that are shadowed by an
+// earlier hostname-only rule. Because patterns without @ match the hostname
+// portion, a rule like ssh_dest: "github.com" will match "git@github.com"
+// before a later ssh_dest: "git@github.com" rule ever fires.
+func checkSSHDestShadowing(yamlRules []Rule, compiled []compiledRule, ruleLines []int) []string {
+	var warnings []string
+
+	// Build a list of hostname-only ssh_dest patterns (no @) and their indices
+	type hostRule struct {
+		index   int
+		name    string
+		pattern string // the raw pattern (no @)
+	}
+	var hostRules []hostRule
+
+	for i, r := range compiled {
+		if r.match.sshDest == nil {
+			continue
+		}
+		raw := r.match.sshDest.raw
+		if !strings.Contains(raw, "@") {
+			hostRules = append(hostRules, hostRule{i, r.name, raw})
+		}
+	}
+
+	// For each user@host rule, check if an earlier hostname-only rule shadows it
+	for i, r := range compiled {
+		if r.match.sshDest == nil {
+			continue
+		}
+		raw := r.match.sshDest.raw
+		if !strings.Contains(raw, "@") {
+			continue // not a user@host pattern
+		}
+
+		// Extract hostname from the user@host pattern
+		atIdx := strings.Index(raw, "@")
+		if atIdx < 0 {
+			continue
+		}
+		host := raw[atIdx+1:]
+
+		// Check if any earlier hostname-only rule would match this hostname.
+		// Only check rules that ONLY differ in ssh_dest — if the earlier rule
+		// has other match fields, it might not shadow this one.
+		for _, hr := range hostRules {
+			if hr.index >= i {
+				break // only check earlier rules
+			}
+			// Check if the earlier rule's ssh_dest pattern matches our hostname.
+			// For exact match: hr.pattern == host
+			// For globs/regex: use the matchPattern
+			earlier := compiled[hr.index]
+			if earlier.match.sshDest.matchString(host) && onlyDiffersInSSHDest(earlier.match, r.match) {
+				linePrefix := ""
+				if i < len(ruleLines) {
+					linePrefix = fmt.Sprintf("line %d: ", ruleLines[i])
+				}
+				warnings = append(warnings, fmt.Sprintf(
+					"%srule %d (%s) ssh_dest %q is shadowed by earlier rule %d (%s) ssh_dest %q — the earlier rule matches the hostname without the user prefix, so this rule will never fire. Move the more specific rule first.",
+					linePrefix, i, r.name, raw, hr.index, hr.name, hr.pattern,
+				))
+			}
+		}
+	}
+	return warnings
+}
+
+// onlyDiffersInSSHDest returns true if two compiled matches have the same
+// fields except for sshDest. Used by shadowing detection — if the earlier
+// rule has additional match constraints, it may not actually shadow the later rule.
+func onlyDiffersInSSHDest(a, b compiledMatch) bool {
+	if len(a.processName) != 0 || len(b.processName) != 0 {
+		return false
+	}
+	if len(a.parentProcessName) != 0 || len(b.parentProcessName) != 0 {
+		return false
+	}
+	if len(a.ancestor) != 0 || len(b.ancestor) != 0 {
+		return false
+	}
+	if a.command != nil || b.command != nil {
+		return false
+	}
+	if a.isInKnownHosts != nil || b.isInKnownHosts != nil {
+		return false
+	}
+	if a.forwardedVia != nil || b.forwardedVia != nil {
+		return false
+	}
+	if a.isForwarded != nil || b.isForwarded != nil {
+		return false
+	}
+	if a.key != "" || b.key != "" {
+		return false
+	}
+	if a.cwd != nil || b.cwd != nil {
+		return false
+	}
+	if a.tmuxWindow != nil || b.tmuxWindow != nil {
+		return false
+	}
+	if a.isInContainer != nil || b.isInContainer != nil {
+		return false
+	}
+	if len(a.env) != 0 || len(b.env) != 0 {
+		return false
+	}
+	return true
 }
 
 func defaultPolicyPath() string {

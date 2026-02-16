@@ -423,10 +423,12 @@ authenticate as you — ssh-agent-guard closes that gap.
 - **Root compromise** — a root-level attacker can read any socket,
   ptrace any process, and bypass all user-level controls.
 - **TOCTOU** (time-of-check-time-of-use) — caller identity is gathered
-  at connect(2) time via SO_PEERCRED.  If a process calls exec(2)
-  between connecting and signing, the policy evaluation uses the
-  pre-exec identity.  In practice this is a narrow window (microseconds)
-  and requires a process specifically designed to exploit it.
+  once per connection at accept(2) time and not re-read on each sign
+  request.  If a process calls exec(2) after identity is captured,
+  subsequent sign requests use the stale (pre-exec) identity.  There
+  is also a narrow race between connect(2) and the /proc reads where
+  an exec could cause the proxy to see the post-exec identity instead.
+  Both scenarios require a process specifically designed to exploit them.
 - **YubiKey coercion** — if confirmation is required and an attacker has
   physical access to your YubiKey (or can socially engineer you into
   touching it), the confirmation can be bypassed.

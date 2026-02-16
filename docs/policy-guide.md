@@ -71,6 +71,54 @@ Every signing operation requires physical YubiKey confirmation unless
 a rule says otherwise.  Use this if you have a YubiKey and want to
 approve every operation individually.
 
+## Understanding ssh_dest
+
+The `ssh_dest` value comes from two sources:
+
+- **Command line parsing** (direct SSH): includes the user if
+  specified — `git@github.com`, `user@host`, or just `host`.
+- **session-bind + known_hosts** (forwarded sessions): bare
+  hostname only — `github.com`, `myserver.example.com`.
+
+**Patterns without `@` match against the hostname only** — the
+`user@` prefix is stripped from the value before matching.  This
+means `github.com` matches both `github.com` (session-bind) and
+`git@github.com` (command line).
+
+**Patterns containing `@` match the full value** — including the
+user portion.  `git@github.com` matches only `git@github.com`, not
+`deploy@github.com` or bare `github.com`.
+
+| Pattern | Matches `git@github.com` | Matches `deploy@github.com` | Matches `github.com` |
+|---------|-------------------------|----------------------------|----------------------|
+| `github.com` | yes (hostname match) | yes (hostname match) | yes |
+| `git@github.com` | yes | no | no |
+| `*.example.com` | — | — | — |
+| `git@*` | yes | no | no |
+| `*@github.com` | yes | yes | no |
+
+**Rule ordering for mixed specificity:** Place specific `user@host`
+rules before broader hostname rules.  First match wins:
+
+```yaml
+rules:
+  # Specific: allow git@ without confirmation
+  - name: git-github
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+
+  # Broad: confirm all other users at github.com
+  - name: all-github
+    match:
+      ssh_dest: "github.com"
+    action: confirm
+```
+
+With this policy, `git@github.com` matches the first rule (allow),
+while `deploy@github.com` skips it (wrong user) and matches the
+second rule (confirm).
+
 ## Common scenarios
 
 ### Git hosting
@@ -78,15 +126,22 @@ approve every operation individually.
 Allow signing for well-known git hosts without confirmation:
 
 ```yaml
+  # Exact user@host — matches direct `ssh git@github.com` only
   - name: git-hosts
     match:
       ssh_dest: "git@github.com"
     action: allow
 
-  # Multiple hosts
+  # Multiple hosts, specific user
   - name: git-hosts-all
     match:
       ssh_dest: "~^git@(github\\.com|gitlab\\.com|codeberg\\.org)$"
+    action: allow
+
+  # Any user at github.com, including forwarded sessions (bare hostname)
+  - name: github-any
+    match:
+      ssh_dest: "*github.com"
     action: allow
 ```
 

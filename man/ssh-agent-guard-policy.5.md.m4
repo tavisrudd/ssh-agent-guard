@@ -165,12 +165,17 @@ Exact match.
 : Glob or regex against the caller's full command line.
 
 **ssh_dest:** *pattern*
-: Glob or regex against the SSH destination (*user@host* or *host*).
+: Match against the SSH destination hostname or *user@host*.
 Resolved from the caller's command line when available, falling back
 to the hostname from **session-bind@openssh.com** (via *known_hosts*
 reverse lookup).
-This unified field works for both direct SSH connections and
-forwarded agent sessions.
+Patterns **without @** match the hostname only — the *user@* prefix
+is stripped before matching.  "github.com" matches both "github.com"
+and "git@github.com".
+Patterns **with @** match the full *user@host* string.
+"git@github.com" matches only "git@github.com", not "deploy@github.com".
+Place specific *user@host* rules before broader hostname rules to
+avoid shadowing.
 
 **is_in_known_hosts:** *true* | *false*
 : Boolean.

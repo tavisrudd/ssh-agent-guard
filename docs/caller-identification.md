@@ -120,13 +120,30 @@ to deny or confirm for container callers.
 
 ## Timing and TOCTOU
 
-Caller identity is gathered immediately when the connection is
-accepted, before any protocol messages are processed.  There is a
-theoretical TOCTOU window: if a process calls `exec(2)` between
-`connect(2)` and the proxy's `/proc` reads, the reads will see the
-post-exec identity while the kernel's SO_PEERCRED still reflects the
-pre-exec PID.
+Caller identity is gathered once per connection, immediately after
+`accept(2)`, before any protocol messages are processed.  The PID is
+obtained via SO_PEERCRED (kernel-verified at `connect(2)` time), then
+`/proc` is read for process details.  This identity is used for all
+subsequent operations on that connection — it is not re-read on each
+sign request.
 
-In practice this window is microseconds and requires a process
-specifically designed to exploit it.  See the threat model for a
+There are two TOCTOU scenarios:
+
+1. **exec(2) after identity capture** (common scenario): if a process
+   calls `exec(2)` after the proxy has already read `/proc`, all
+   subsequent sign requests use the stale (pre-exec) identity.  A
+   malicious process could connect as itself, then exec into a
+   different binary — but the proxy would evaluate with the original
+   identity, not the new one.
+
+2. **exec(2) between connect(2) and /proc reads** (narrow race): if
+   a process calls `exec(2)` in the microseconds between `connect(2)`
+   and the proxy's `/proc` reads, the proxy sees the post-exec
+   identity.  A malicious process that connects, then immediately
+   execs into a benign binary name, would appear as the benign
+   process.  This requires precise timing and a custom binary that
+   preserves the socket fd across exec.
+
+In practice both scenarios are narrow and require a process
+specifically designed to exploit them.  See the threat model for a
 full discussion.

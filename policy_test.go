@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,7 +295,7 @@ rules:
 			wantRule:   "default",
 		},
 		{
-			name: "ssh_dest glob",
+			name: "ssh_dest exact user@host",
 			yaml: `
 default_action: deny
 rules:
@@ -308,6 +309,314 @@ rules:
 			},
 			wantAction: Allow,
 			wantRule:   "github",
+		},
+		{
+			name: "ssh_dest user@host no match wrong user",
+			yaml: `
+default_action: deny
+rules:
+  - name: github
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "root@github.com", Env: map[string]string{},
+			},
+			wantAction: Deny,
+			wantRule:   "default",
+		},
+		{
+			name: "ssh_dest wildcard user@*",
+			yaml: `
+default_action: deny
+rules:
+  - name: git-anywhere
+    match:
+      ssh_dest: "git@*"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "git@github.com", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "git-anywhere",
+		},
+		{
+			name: "ssh_dest wildcard user@* no match different user",
+			yaml: `
+default_action: deny
+rules:
+  - name: git-anywhere
+    match:
+      ssh_dest: "git@*"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "root@example.com", Env: map[string]string{},
+			},
+			wantAction: Deny,
+			wantRule:   "default",
+		},
+		{
+			name: "ssh_dest hostname glob matches cmdline user@host",
+			yaml: `
+default_action: deny
+rules:
+  - name: any-github
+    match:
+      ssh_dest: "*github.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "git@github.com", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "any-github",
+		},
+		{
+			name: "ssh_dest bare host from session-bind",
+			yaml: `
+default_action: deny
+rules:
+  - name: known-host
+    match:
+      ssh_dest: "myserver.example.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session:    &SessionBindInfo{DestHostname: "myserver.example.com"},
+			wantAction: Allow,
+			wantRule:   "known-host",
+		},
+		{
+			name: "ssh_dest user@host pattern does not match bare host from session-bind",
+			yaml: `
+default_action: deny
+rules:
+  - name: git-only
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session:    &SessionBindInfo{DestHostname: "github.com"},
+			wantAction: Deny,
+			wantRule:   "default",
+		},
+		{
+			name: "ssh_dest wildcard *.example.com matches session-bind host",
+			yaml: `
+default_action: deny
+rules:
+  - name: example-hosts
+    match:
+      ssh_dest: "*.example.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session:    &SessionBindInfo{DestHostname: "server.example.com"},
+			wantAction: Allow,
+			wantRule:   "example-hosts",
+		},
+		{
+			name: "ssh_dest regex matches user@host",
+			yaml: `
+default_action: deny
+rules:
+  - name: git-hosts
+    match:
+      ssh_dest: "~^git@(github|gitlab)\\.com$"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "git@gitlab.com", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "git-hosts",
+		},
+		{
+			name: "ssh_dest *@host matches any user at host",
+			yaml: `
+default_action: deny
+rules:
+  - name: any-user-github
+    match:
+      ssh_dest: "*@github.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "deploy@github.com", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "any-user-github",
+		},
+		{
+			name: "ssh_dest *@host does not match bare hostname from session-bind",
+			yaml: `
+default_action: deny
+rules:
+  - name: any-user-github
+    match:
+      ssh_dest: "*@github.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session:    &SessionBindInfo{DestHostname: "github.com"},
+			wantAction: Deny,
+			wantRule:   "default",
+		},
+		{
+			name: "ssh_dest bare hostname pattern matches bare hostname",
+			yaml: `
+default_action: deny
+rules:
+  - name: exact-host
+    match:
+      ssh_dest: "github.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session:    &SessionBindInfo{DestHostname: "github.com"},
+			wantAction: Allow,
+			wantRule:   "exact-host",
+		},
+		{
+			name: "ssh_dest bare hostname pattern matches user@host (hostname extraction)",
+			yaml: `
+default_action: deny
+rules:
+  - name: exact-host
+    match:
+      ssh_dest: "github.com"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "git@github.com", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "exact-host",
+		},
+		{
+			name: "ssh_dest hostname regex without @ matches hostname from user@host",
+			yaml: `
+default_action: deny
+rules:
+  - name: github-regex
+    match:
+      ssh_dest: "~^github\\.com$"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "git@github.com", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "github-regex",
+		},
+		{
+			name: "ssh_dest regex with @ matches full value only",
+			yaml: `
+default_action: deny
+rules:
+  - name: git-regex
+    match:
+      ssh_dest: "~^git@github\\.com$"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session:    &SessionBindInfo{DestHostname: "github.com"},
+			wantAction: Deny,
+			wantRule:   "default",
+		},
+		{
+			name: "ssh_dest specific user@host rule before broad host rule",
+			yaml: `
+default_action: deny
+rules:
+  - name: git-github
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+  - name: all-github
+    match:
+      ssh_dest: "github.com"
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "git@github.com", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "git-github",
+		},
+		{
+			name: "ssh_dest broad host rule matches non-git user when specific rule doesn't",
+			yaml: `
+default_action: deny
+rules:
+  - name: git-github
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+  - name: all-github
+    match:
+      ssh_dest: "github.com"
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "deploy@github.com", Env: map[string]string{},
+			},
+			wantAction: Confirm,
+			wantRule:   "all-github",
+		},
+		{
+			name: "ssh_dest broad host rule matches session-bind bare hostname",
+			yaml: `
+default_action: deny
+rules:
+  - name: git-github
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+  - name: all-github
+    match:
+      ssh_dest: "github.com"
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session:    &SessionBindInfo{DestHostname: "github.com"},
+			wantAction: Confirm,
+			wantRule:   "all-github",
+		},
+		{
+			name: "ssh_dest cmdline takes precedence over session-bind",
+			yaml: `
+default_action: deny
+rules:
+  - name: cmdline-dest
+    match:
+      ssh_dest: "user@realhost"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", SSHDest: "user@realhost", Env: map[string]string{},
+			},
+			session:    &SessionBindInfo{DestHostname: "different-host"},
+			wantAction: Allow,
+			wantRule:   "cmdline-dest",
 		},
 		{
 			name: "is_forwarded bool match",
@@ -1024,5 +1333,162 @@ func TestPolicyLoadBadDefaultActionRejectsConfig(t *testing.T) {
 	)
 	if result.Action != Deny {
 		t.Errorf("should keep previous config after bad default_action, got %v", result.Action)
+	}
+}
+
+func TestPolicyLoadMissingDefaultActionRejectsConfig(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	// A policy file that omits default_action should be rejected.
+	// Without this check, it would silently default to "allow" — a dangerous footgun.
+	noDefault := "rules:\n  - name: deny-forwarded\n    match:\n      is_forwarded: true\n    action: deny\n"
+	os.WriteFile(policyFile, []byte(noDefault), 0644)
+	_, loadResult := NewPolicy(policyFile)
+
+	if loadResult.OK {
+		t.Error("config without default_action should fail to load")
+	}
+	if len(loadResult.Errors) == 0 {
+		t.Error("expected error message about missing default_action")
+	}
+	if !strings.Contains(loadResult.Errors[0], "default_action") {
+		t.Errorf("error should mention default_action, got: %s", loadResult.Errors[0])
+	}
+}
+
+func TestPolicyLoadMissingDefaultActionKeepsPrevious(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	// Load a valid config first
+	valid := "default_action: deny\nrules: []\n"
+	os.WriteFile(policyFile, []byte(valid), 0644)
+	policy := newTestPolicyFromFile(policyFile)
+
+	// Overwrite with config missing default_action
+	noDefault := "rules: []\n"
+	os.WriteFile(policyFile, []byte(noDefault), 0644)
+	loadResult := policy.Load()
+
+	if loadResult.OK {
+		t.Error("config without default_action should fail to load")
+	}
+
+	// Previous config still active (deny)
+	result := policy.Evaluate(
+		&CallerContext{Name: "ssh", Env: map[string]string{}},
+		nil, "",
+	)
+	if result.Action != Deny {
+		t.Errorf("should keep previous config after missing default_action, got %v", result.Action)
+	}
+}
+
+func TestPolicySSHDestShadowingDetected(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	// Broad hostname rule before specific user@host — shadowed
+	shadowed := `
+default_action: deny
+rules:
+  - name: all-github
+    match:
+      ssh_dest: "github.com"
+    action: confirm
+  - name: git-github
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+`
+	os.WriteFile(policyFile, []byte(shadowed), 0644)
+	_, loadResult := NewPolicy(policyFile)
+
+	if loadResult.OK {
+		t.Error("config with shadowed ssh_dest rule should fail to load")
+	}
+	if len(loadResult.Errors) == 0 {
+		t.Fatal("expected error about shadowed rule")
+	}
+	if !strings.Contains(loadResult.Errors[0], "shadowed") {
+		t.Errorf("error should mention shadowing, got: %s", loadResult.Errors[0])
+	}
+}
+
+func TestPolicySSHDestShadowingNotTriggeredWhenCorrectOrder(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	// Specific user@host before broad hostname — correct order
+	correct := `
+default_action: deny
+rules:
+  - name: git-github
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+  - name: all-github
+    match:
+      ssh_dest: "github.com"
+    action: confirm
+`
+	os.WriteFile(policyFile, []byte(correct), 0644)
+	_, loadResult := NewPolicy(policyFile)
+
+	if !loadResult.OK {
+		t.Errorf("correctly ordered ssh_dest rules should load fine, got errors: %v", loadResult.Errors)
+	}
+}
+
+func TestPolicySSHDestShadowingNotTriggeredWithExtraMatchFields(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	// Broad hostname rule with extra constraints — doesn't shadow
+	// because the extra match fields narrow the scope
+	notShadowed := `
+default_action: deny
+rules:
+  - name: forwarded-github
+    match:
+      ssh_dest: "github.com"
+      is_forwarded: true
+    action: confirm
+  - name: git-github
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+`
+	os.WriteFile(policyFile, []byte(notShadowed), 0644)
+	_, loadResult := NewPolicy(policyFile)
+
+	if !loadResult.OK {
+		t.Errorf("non-shadowed rules with extra match fields should load fine, got errors: %v", loadResult.Errors)
+	}
+}
+
+func TestPolicySSHDestShadowingWithGlob(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	// Glob hostname rule before specific user@host — shadowed
+	shadowed := `
+default_action: deny
+rules:
+  - name: all-example
+    match:
+      ssh_dest: "*.example.com"
+    action: confirm
+  - name: git-example
+    match:
+      ssh_dest: "git@server.example.com"
+    action: allow
+`
+	os.WriteFile(policyFile, []byte(shadowed), 0644)
+	_, loadResult := NewPolicy(policyFile)
+
+	if loadResult.OK {
+		t.Error("config with glob-shadowed ssh_dest rule should fail to load")
 	}
 }

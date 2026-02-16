@@ -35,9 +35,13 @@ These are documented in the man page but bear repeating:
   upstream agent socket, bypassing the guard entirely. See SYSTEM
   SETUP in ssh-agent-guard(1).
 - **Root compromise**: A root-level attacker can bypass all controls.
-- **TOCTOU**: Caller identity is gathered at connect(2) time; a
-  process that exec(2)s between connecting and signing will be
-  evaluated with its pre-exec identity.
+- **TOCTOU**: Caller identity is gathered once per connection,
+  immediately after accept(2), by reading /proc for the PID
+  obtained via SO_PEERCRED. If a process calls exec(2) after
+  identity is captured, subsequent sign requests on that connection
+  use the stale (pre-exec) identity. There is also a narrow race
+  between connect(2) and the /proc reads where an exec could cause
+  the proxy to read the post-exec identity instead of the original.
 - **PID recycling**: Theoretically exploitable on systems with small
   PID ranges, though impractical in practice.
 - **Environment assumptions**: The confirmation UI assumes sway/tmux.

@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -24,12 +26,15 @@ func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext
 		return false
 	}
 
-	// Generate request ID
+	// Generate request ID and nonce for response authentication.
+	// The nonce prevents a same-user attacker from blindly writing "allow"
+	// to the FIFO — they must read the nonce from the request file first.
 	reqID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), caller.PID)
+	nonce := generateNonce()
 
 	// Write request details for the helper to display
 	reqPath := filepath.Join(c.PendingDir, reqID+".yaml")
-	if err := c.writeRequest(reqPath, caller, session, key); err != nil {
+	if err := c.writeRequest(reqPath, caller, session, key, nonce); err != nil {
 		log.Printf("confirm_pin: write request: %v", err)
 		return false
 	}
@@ -69,8 +74,18 @@ func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext
 		return false
 	}
 
-	if result == "allow" {
+	// Response must be "allow <nonce>" to prevent blind FIFO injection.
+	// A same-user attacker monitoring the pending directory could write to the
+	// FIFO, but they must read the nonce from the 0600 request file first.
+	if result == "allow "+nonce {
 		log.Printf("confirm_pin: approved for %s → %s", caller.Name, dest)
+		return true
+	}
+
+	// Accept bare "allow" with a warning for backwards compatibility during
+	// transition. TODO: remove after one release cycle.
+	if result == "allow" {
+		log.Printf("confirm_pin: approved for %s → %s (WARN: nonce missing — update ssh-ag-confirm)", caller.Name, dest)
 		return true
 	}
 
@@ -79,7 +94,9 @@ func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext
 }
 
 // writeRequest writes the confirm request details as YAML for the helper.
-func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session *SessionBindInfo, key ssh.PublicKey) error {
+// The nonce is included so the helper can echo it back in the FIFO response,
+// proving it read the request file (which is 0600, user-only).
+func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session *SessionBindInfo, key ssh.PublicKey, nonce string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
 		return err
@@ -93,6 +110,7 @@ func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session
 	fmt.Fprintf(f, "pid: %d\n", caller.PID)
 	fmt.Fprintf(f, "dest: %s\n", dest)
 	fmt.Fprintf(f, "key: %s\n", fingerprint)
+	fmt.Fprintf(f, "nonce: %s\n", nonce)
 	if caller.TmuxWindow != "" {
 		fmt.Fprintf(f, "tmux_window: %s\n", caller.TmuxWindow)
 	}
@@ -100,6 +118,19 @@ func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session
 		fmt.Fprintf(f, "cwd: %s\n", caller.CWD)
 	}
 	return nil
+}
+
+// generateNonce returns a 16-byte hex-encoded random string for FIFO
+// response authentication.
+func generateNonce() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand should never fail on Linux (/dev/urandom).
+		// Fall back to timestamp-based nonce rather than failing the confirm.
+		log.Printf("confirm_pin: crypto/rand failed: %v (using fallback)", err)
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 // readFIFO reads a single line from a FIFO, respecting context cancellation.

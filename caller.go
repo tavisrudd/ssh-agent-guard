@@ -387,6 +387,13 @@ func extractSSHDest(cmdline string) string {
 			i++
 			continue
 		}
+		if arg == "--" {
+			// End of options — next arg is the destination
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		}
 		if strings.HasPrefix(arg, "--") {
 			i++
 			continue

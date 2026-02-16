@@ -86,6 +86,7 @@ field() {
 CALLER=$(field caller)
 DEST=$(field dest)
 KEY=$(field key)
+NONCE=$(field nonce)
 WINDOW=$(field tmux_window)
 CWD=$(field cwd)
 
@@ -152,7 +153,13 @@ RESPONSE=$(echo -n "$PIN" | "$YKCHALRESP" -"$PIN_SLOT" -i- 2>/dev/null) || true
 
 if [ "$RESPONSE" = "$EXPECTED" ]; then
     echo "  Confirmed."
-    echo "allow" > "$FIFO"
+    # Include nonce in response to prove we read the request file (0600).
+    # Prevents a same-user attacker from blindly writing "allow" to the FIFO.
+    if [ -n "${NONCE:-}" ]; then
+        echo "allow $NONCE" > "$FIFO"
+    else
+        echo "allow" > "$FIFO"
+    fi
     wrote_result=true
 else
     echo "  PIN incorrect."

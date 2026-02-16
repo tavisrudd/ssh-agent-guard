@@ -70,6 +70,14 @@ func TestExtractSSHDest(t *testing.T) {
 		{"ssh -NTfp 22 user@host", "user@host"},
 		// Combined boolean flags only
 		{"ssh -NTf user@host", "user@host"},
+		// End of options marker
+		{"ssh -- user@host", "user@host"},
+		{"ssh -v -- user@host", "user@host"},
+		{"ssh -p 22 -- user@host", "user@host"},
+		// -- with no destination after it
+		{"ssh --", ""},
+		// Long option (not --)
+		{"ssh --version", ""},
 	}
 	for _, tt := range tests {
 		got := extractSSHDest(tt.cmdline)
