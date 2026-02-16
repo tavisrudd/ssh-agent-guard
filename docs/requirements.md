@@ -1,8 +1,9 @@
-- **Linux only** — uses `SO_PEERCRED(7)` for kernel-verified caller
-  identification and `/proc` for process context (command line, ancestry,
-  environment, PID namespaces).  No macOS or BSD equivalent exists for
-  these interfaces.  On macOS, `ssh-add -c` provides basic per-operation
-  confirmation without caller identification.
+- **Linux only** (macOS support planned) — uses `SO_PEERCRED(7)` for
+  kernel-verified caller identification and `/proc` for process context
+  (command line, ancestry, environment, PID namespaces).  macOS has
+  equivalent APIs (`LOCAL_PEERPID`, `KERN_PROCARGS2`, `proc_pidinfo`)
+  that enable a near-complete port — see
+  [macOS support](docs/macos-support.md) for the full analysis.
 - **OpenSSH 8.9+** — required for `session-bind@openssh.com`, which
   enables forwarded agent detection and the `ssh_dest`,
   `is_in_known_hosts`, and `is_forwarded` policy fields.

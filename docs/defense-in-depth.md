@@ -62,11 +62,17 @@ connection.  ssh-agent-guard can restrict who can *use* each key
 
 By default, any process running as your user can connect directly
 to the SSH agent socket, bypassing ssh-agent-guard entirely.
-See the [system setup](../README.md#system-setup) section for
-filesystem-permission-based protection that closes this gap.
 
-The short version: put the real agent socket in a directory with
-mode 0700 that only the guard process traverses.
+The baseline approach is to put the real agent socket in a 0700
+directory.  This prevents other users from reaching it, but same-user
+processes can still traverse it — the defense is that they don't know
+the path.
+
+For stronger, kernel-enforced isolation, Linux offers several options
+that restrict per-process file access without a separate user:
+Landlock (unprivileged, no root needed), systemd
+`InaccessiblePaths=`, AppArmor/SELinux, and mount namespaces.  See
+[system setup](system-setup.md) for details and examples.
 
 ## Keep OpenSSH updated
 

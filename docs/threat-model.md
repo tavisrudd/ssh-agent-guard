@@ -29,8 +29,11 @@ authenticate as you — ssh-agent-guard closes that gap.
 
 - **Same-user socket access** (without system hardening) — by default,
   any process running as your user can connect directly to the upstream
-  agent socket, bypassing the proxy entirely.  See the system setup
-  section for filesystem-level protections that close this gap.
+  agent socket, bypassing the proxy entirely.  A 0700 directory hides
+  the socket from other users but not same-user processes.  Linux
+  provides kernel-enforced per-process isolation (Landlock, systemd
+  sandboxing, AppArmor/SELinux, mount namespaces) that can close this
+  gap.  See the [system setup](system-setup.md) section for details.
 - **Root compromise** — a root-level attacker can read any socket,
   ptrace any process, and bypass all user-level controls.
 - **TOCTOU** (time-of-check-time-of-use) — caller identity is gathered
