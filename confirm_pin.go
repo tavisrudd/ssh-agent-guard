@@ -82,13 +82,6 @@ func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext
 		return true
 	}
 
-	// Accept bare "allow" with a warning for backwards compatibility during
-	// transition. TODO: remove after one release cycle.
-	if result == "allow" {
-		log.Printf("confirm_pin: approved for %s → %s (WARN: nonce missing — update ssh-ag-confirm)", caller.Name, dest)
-		return true
-	}
-
 	log.Printf("confirm_pin: denied for %s → %s (result=%q)", caller.Name, dest, result)
 	return false
 }

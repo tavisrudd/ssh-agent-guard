@@ -980,6 +980,177 @@ rules:
 			wantAction: Allow,
 			wantRule:   "default",
 		},
+		{
+			name: "tmux_window exact match",
+			yaml: `
+default_action: deny
+rules:
+  - name: dev-window
+    match:
+      tmux_window: "main:dev"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", TmuxWindow: "main:dev", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "dev-window",
+		},
+		{
+			name: "tmux_window glob match",
+			yaml: `
+default_action: deny
+rules:
+  - name: main-session
+    match:
+      tmux_window: "main:*"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", TmuxWindow: "main:code", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "main-session",
+		},
+		{
+			name: "tmux_window no match",
+			yaml: `
+default_action: allow
+rules:
+  - name: dev-window
+    match:
+      tmux_window: "main:dev"
+    action: deny
+`,
+			caller: &CallerContext{
+				Name: "ssh", TmuxWindow: "work:build", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "default",
+		},
+		{
+			name: "forwarded_via exact match",
+			yaml: `
+default_action: deny
+rules:
+  - name: via-bastion
+    match:
+      forwarded_via: "alice@bastion"
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name: "ssh", ForwardedVia: "alice@bastion", Env: map[string]string{},
+			},
+			wantAction: Confirm,
+			wantRule:   "via-bastion",
+		},
+		{
+			name: "forwarded_via glob match",
+			yaml: `
+default_action: deny
+rules:
+  - name: via-any-bastion
+    match:
+      forwarded_via: "*@bastion*"
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name: "ssh", ForwardedVia: "bob@bastion.prod", Env: map[string]string{},
+			},
+			wantAction: Confirm,
+			wantRule:   "via-any-bastion",
+		},
+		{
+			name: "forwarded_via no match when empty",
+			yaml: `
+default_action: allow
+rules:
+  - name: via-bastion
+    match:
+      forwarded_via: "alice@bastion"
+    action: deny
+`,
+			caller: &CallerContext{
+				Name: "ssh", ForwardedVia: "", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "default",
+		},
+		{
+			name: "command glob match",
+			yaml: `
+default_action: deny
+rules:
+  - name: ssh-to-local
+    match:
+      command: "ssh *.local*"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh", Cmdline: "ssh nano.local uptime", Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "ssh-to-local",
+		},
+		{
+			name: "multiple env vars must all match",
+			yaml: `
+default_action: allow
+rules:
+  - name: claude-in-term
+    match:
+      env:
+        CLAUDECODE: "1"
+        TERM: "xterm-256color"
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name: "ssh",
+				Env:  map[string]string{"CLAUDECODE": "1", "TERM": "xterm-256color"},
+			},
+			wantAction: Confirm,
+			wantRule:   "claude-in-term",
+		},
+		{
+			name: "multiple env vars partial mismatch",
+			yaml: `
+default_action: allow
+rules:
+  - name: claude-in-term
+    match:
+      env:
+        CLAUDECODE: "1"
+        TERM: "xterm-256color"
+    action: deny
+`,
+			caller: &CallerContext{
+				Name: "ssh",
+				Env:  map[string]string{"CLAUDECODE": "1", "TERM": "screen"},
+			},
+			wantAction: Allow,
+			wantRule:   "default",
+		},
+		{
+			name: "parent_process_name with list match",
+			yaml: `
+default_action: deny
+rules:
+  - name: shell-parent
+    match:
+      parent_process_name: [bash, zsh, fish]
+    action: allow
+`,
+			caller: &CallerContext{
+				Name: "ssh",
+				Ancestry: []AncestorInfo{
+					{PID: 100, Name: "ssh"},
+					{PID: 50, Name: "zsh"},
+				},
+				Env: map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "shell-parent",
+		},
 	}
 
 	for _, tt := range tests {

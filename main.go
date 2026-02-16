@@ -89,6 +89,9 @@ func main() {
 	policy.Watch()
 	updateConfirmCfg()
 
+	// Compile ControlPath regex for mux forwarded_via extraction
+	initMuxViaRegex()
+
 	// Load known_hosts for reverse host key → hostname lookup
 	knownHostsPath := filepath.Join(os.Getenv("HOME"), ".ssh", "known_hosts")
 	var knownHosts atomic.Pointer[KnownHostsResolver]
@@ -97,16 +100,19 @@ func main() {
 	// Remove stale socket from previous run
 	os.Remove(listenPath)
 
+	// Set restrictive umask before Listen so the socket is created with 0600
+	// from the start, closing the chmod-after-listen race window.
+	oldUmask := syscall.Umask(0077)
+
 	listener, err := net.Listen("unix", listenPath)
 	if err != nil {
+		syscall.Umask(oldUmask)
 		log.Fatalf("listen %s: %v", listenPath, err)
 	}
+
+	syscall.Umask(oldUmask)
 	defer listener.Close()
 	defer os.Remove(listenPath)
-
-	if err := os.Chmod(listenPath, 0600); err != nil {
-		log.Printf("chmod %s: %v", listenPath, err)
-	}
 
 	log.Printf("ssh-agent-guard pid=%d listen=%s upstream=%s state=%s",
 		os.Getpid(), listenPath, upstreamPath, stateDir)
@@ -224,7 +230,7 @@ func syncErrorFile(path string, result LoadResult) {
 			log.Printf("syncErrorFile: marshal: %v", err)
 			return
 		}
-		os.WriteFile(path, data, 0644)
+		os.WriteFile(path, data, 0600)
 	}
 }
 

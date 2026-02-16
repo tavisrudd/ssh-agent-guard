@@ -3,10 +3,11 @@
 ## Status
 
 **ssh-agent-guard is beta software.** It was recently extracted from a
-personal dotfiles repository and has not undergone an independent
-security review. While it includes a comprehensive test suite and has
-been used in production on the author's machines, it may contain bugs
-or design issues that affect security.
+personal dotfiles repository and has not undergone an independent human
+security review — only multiple rounds of LLM/coding-agent reviews.
+While it includes a comprehensive test suite and has been used in
+production on the author's machines, it may contain bugs or design
+issues that affect security.
 
 **Do not rely on ssh-agent-guard as your sole security boundary
 without understanding its limitations.** Read the THREAT MODEL section

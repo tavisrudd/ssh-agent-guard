@@ -104,7 +104,7 @@ type Logger struct {
 }
 
 func NewLogger(stateDir string, policy *Policy) *Logger {
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		log.Printf("mkdir %s: %v", stateDir, err)
 	}
 	return &Logger{
@@ -385,7 +385,7 @@ func (l *Logger) LogConfigChange(result LoadResult) {
 			log.Printf("yaml marshal config reload failed: %v", err)
 			return
 		}
-		if err := os.WriteFile(logPath, data, 0644); err != nil {
+		if err := os.WriteFile(logPath, data, 0600); err != nil {
 			log.Printf("log write %s: %v", logPath, err)
 		}
 		return
@@ -429,7 +429,7 @@ func (l *Logger) LogConfigChange(result LoadResult) {
 		log.Printf("yaml marshal config reload: %v", err)
 		return
 	}
-	if err := os.WriteFile(logPath, data, 0644); err != nil {
+	if err := os.WriteFile(logPath, data, 0600); err != nil {
 		log.Printf("log write %s: %v", logPath, err)
 	}
 }
@@ -468,7 +468,7 @@ func (l *Logger) writeCurrentFile(status *currentStatus) {
 		return
 	}
 	currentFile := filepath.Join(l.stateDir, "current.yaml")
-	if err := os.WriteFile(currentFile, data, 0644); err != nil {
+	if err := os.WriteFile(currentFile, data, 0600); err != nil {
 		log.Printf("write %s: %v", currentFile, err)
 	}
 }
@@ -489,7 +489,7 @@ func writeLogFile(path string, ev *logEvent) {
 		log.Printf("yaml marshal log: %v", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		log.Printf("log write %s: %v", path, err)
 	}
 }

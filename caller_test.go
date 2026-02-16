@@ -78,6 +78,23 @@ func TestExtractSSHDest(t *testing.T) {
 		{"ssh --", ""},
 		// Long option (not --)
 		{"ssh --version", ""},
+		// -l flag consumes next arg (login name), dest is the arg after
+		{"ssh -l alice host", "host"},
+		{"ssh -lalice host", "host"},
+		// Concatenated -o value
+		{"ssh -oStrictHostKeyChecking=no user@host", "user@host"},
+		// IPv4/IPv6 boolean flags
+		{"ssh -4 user@host", "user@host"},
+		{"ssh -6 user@host", "user@host"},
+		{"ssh -46 user@host", "user@host"},
+		// Repeated boolean flag
+		{"ssh -tt user@host", "user@host"},
+		// -F with concatenated path
+		{"ssh -F/dev/null user@host", "user@host"},
+		// Multiple arg-consuming flags
+		{"ssh -l alice -p 22 -i ~/.ssh/id host", "host"},
+		// Boolean flags before -- with remote command containing dashes
+		{"ssh -NT -- user@host -suspicious-looking-arg", "user@host"},
 	}
 	for _, tt := range tests {
 		got := extractSSHDest(tt.cmdline)
@@ -87,27 +104,117 @@ func TestExtractSSHDest(t *testing.T) {
 	}
 }
 
-func TestParseMuxViaHost(t *testing.T) {
+
+func TestExtractMuxVia(t *testing.T) {
 	tests := []struct {
-		cmdline string
-		want    string
+		name        string
+		controlPath string // basename of ControlPath template
+		cmdline     string
+		want        string
 	}{
-		// Standard mux process — returns user@host
-		{"ssh: /home/alice/.ssh/sockets/nano_22_alice [mux]", "alice@nano"},
-		{"ssh: /tmp/sockets/host.example.com_22_user [mux]", "user@host.example.com"},
-		// Not a mux process
-		{"ssh user@host", ""},
-		{"", ""},
-		// Missing [mux] suffix
-		{"ssh: /path/to/socket", ""},
-		// Missing ssh: prefix
-		{"/path/to/socket [mux]", ""},
+		{
+			name:        "%h_%p_%r standard",
+			controlPath: "%h_%p_%r",
+			cmdline:     "ssh: /home/alice/.ssh/sockets/nano_22_alice [mux]",
+			want:        "alice@nano",
+		},
+		{
+			name:        "%h_%p_%r dotted host",
+			controlPath: "%h_%p_%r",
+			cmdline:     "ssh: /tmp/sockets/host.example.com_22_user [mux]",
+			want:        "user@host.example.com",
+		},
+		{
+			name:        "%h_%p_%r host with underscore",
+			controlPath: "%h_%p_%r",
+			cmdline:     "ssh: /tmp/sockets/my_host_22_alice [mux]",
+			want:        "alice@my_host",
+		},
+		{
+			name:        "%r@%h:%p format",
+			controlPath: "%r@%h:%p",
+			cmdline:     "ssh: /home/alice/.ssh/sockets/alice@nano:22 [mux]",
+			want:        "alice@nano",
+		},
+		{
+			name:        "%r@%h:%p dotted host",
+			controlPath: "%r@%h:%p",
+			cmdline:     "ssh: /tmp/sockets/git@github.com:22 [mux]",
+			want:        "git@github.com",
+		},
+		{
+			name:        "%h-%p-%r format",
+			controlPath: "%h-%p-%r",
+			cmdline:     "ssh: /tmp/sockets/nano-22-alice [mux]",
+			want:        "alice@nano",
+		},
+		{
+			name:        "%h:%p no user",
+			controlPath: "%h:%p",
+			cmdline:     "ssh: /tmp/sockets/nano:22 [mux]",
+			want:        "nano",
+		},
+		{
+			name:        "not mux cmdline",
+			controlPath: "%h_%p_%r",
+			cmdline:     "ssh user@host",
+			want:        "",
+		},
+		{
+			name:        "empty cmdline",
+			controlPath: "%h_%p_%r",
+			cmdline:     "",
+			want:        "",
+		},
 	}
+
 	for _, tt := range tests {
-		got := parseMuxViaHost(tt.cmdline)
-		if got != tt.want {
-			t.Errorf("parseMuxViaHost(%q) = %q, want %q", tt.cmdline, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			// Compile the pattern from the ControlPath basename
+			re := compileControlPathRegex(tt.controlPath)
+			if re == nil {
+				if tt.want != "" {
+					t.Fatalf("compileControlPathRegex(%q) returned nil", tt.controlPath)
+				}
+				return
+			}
+
+			// Temporarily set the global regex
+			saved := muxViaRegex.pattern
+			muxViaRegex.pattern = re
+			defer func() { muxViaRegex.pattern = saved }()
+
+			got := extractMuxVia(tt.cmdline)
+			if got != tt.want {
+				t.Errorf("extractMuxVia(%q) = %q, want %q (regex: %s)", tt.cmdline, got, tt.want, re.String())
+			}
+		})
+	}
+}
+
+func TestCompileControlPathRegex(t *testing.T) {
+	// %C only — no host info extractable
+	re := compileControlPathRegex("%C")
+	if re != nil {
+		t.Error("opaque hash ControlPath should return nil")
+	}
+
+	// ssh-%C — no %h, still nil
+	re = compileControlPathRegex("ssh-%C")
+	if re != nil {
+		t.Error("hash ControlPath without host token should return nil")
+	}
+
+	// %h_%p_%r should compile
+	re = compileControlPathRegex("%h_%p_%r")
+	if re == nil {
+		t.Fatal("h_p_r ControlPath should compile")
+	}
+
+	// Escaped literal percent
+	re = compileControlPathRegex("ssh-%%-%h_%p")
+	if re == nil {
+		t.Fatal("should handle escaped percent")
 	}
 }
 

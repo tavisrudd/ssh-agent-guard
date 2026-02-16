@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"os"
@@ -175,7 +176,7 @@ func (c *ConfirmConfig) ConfirmHMAC(parent context.Context) bool {
 			}
 			return false
 		}
-		if r.response == expected {
+		if subtle.ConstantTimeCompare([]byte(r.response), []byte(expected)) == 1 {
 			log.Printf("confirm: YubiKey response matched (serial %s)", serial)
 			return true
 		}

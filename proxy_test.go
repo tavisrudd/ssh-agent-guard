@@ -13,6 +13,21 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+// stubExtendedAgent wraps an agent.Agent to implement ExtendedAgent.
+// Extension returns ErrExtensionUnsupported, which is sufficient for tests
+// that only need the proxy to process session-bind before forwarding.
+type stubExtendedAgent struct {
+	agent.Agent
+}
+
+func (s *stubExtendedAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
+	return nil, agent.ErrExtensionUnsupported
+}
+
+func (s *stubExtendedAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
+	return s.Agent.Sign(key, data)
+}
+
 // testProxy sets up a full proxy pipeline: upstream keyring agent listening on
 // a Unix socket, the ProxyAgent wired between client and upstream. Returns a
 // client connected through the proxy, and a cleanup function.
@@ -255,6 +270,132 @@ rules:
 	_, err = client.Sign(keys[0], []byte("test"))
 	if err == nil {
 		t.Fatal("expected Sign to fail for forwarded session")
+	}
+}
+
+func TestProxySessionBindMalformedFailsClosed(t *testing.T) {
+	// When session-bind is present but unparseable, the proxy should treat
+	// it as forwarded (fail closed) so that is_forwarded deny rules still fire.
+	policy := newTestPolicy(t, `
+default_action: allow
+rules:
+  - name: deny-forwarded
+    match:
+      is_forwarded: true
+    action: deny
+`)
+	client, cleanup := testProxy(t, policy)
+	defer cleanup()
+
+	// Send a malformed session-bind (truncated payload)
+	client.(agent.ExtendedAgent).Extension("session-bind@openssh.com", []byte{0, 0, 0, 5, 1, 2, 3})
+
+	// Signing should be denied because malformed session-bind is treated as forwarded
+	keys, err := client.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Sign(keys[0], []byte("test"))
+	if err == nil {
+		t.Fatal("expected Sign to fail — malformed session-bind should be treated as forwarded")
+	}
+}
+
+func TestSessionBindForwardedMovesSSHDestToForwardedVia(t *testing.T) {
+	// When session-bind says forwarded, the local SSH cmdline destination
+	// is the intermediate host. It should be moved to ForwardedVia so that
+	// ssh_dest falls through to session-bind's DestHostname.
+	caller := &CallerContext{
+		Name:    "ssh",
+		SSHDest: "bastion.example.com",
+		Env:     map[string]string{},
+	}
+
+	proxy := &ProxyAgent{
+		upstream: &stubExtendedAgent{agent.NewKeyring()},
+		caller:   caller,
+	}
+
+	// Build forwarded session-bind
+	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
+	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
+	hostKeyBlob := hostSigner.PublicKey().Marshal()
+
+	var payload []byte
+	payload = append(payload, makeSSHString(hostKeyBlob)...)
+	payload = append(payload, makeSSHString([]byte("session-id"))...)
+	payload = append(payload, makeSSHString([]byte("signature"))...)
+	payload = append(payload, 0x01) // forwarded=true
+
+	proxy.Extension("session-bind@openssh.com", payload)
+
+	if caller.SSHDest != "" {
+		t.Errorf("SSHDest should be cleared after forwarded session-bind, got %q", caller.SSHDest)
+	}
+	if caller.ForwardedVia != "bastion.example.com" {
+		t.Errorf("ForwardedVia should be bastion.example.com, got %q", caller.ForwardedVia)
+	}
+	if proxy.session == nil || !proxy.session.IsForwarded {
+		t.Error("session should be set and forwarded")
+	}
+}
+
+func TestSessionBindNotForwardedKeepsSSHDest(t *testing.T) {
+	// When session-bind says NOT forwarded, SSHDest should stay — it's the
+	// actual destination (same as session-bind's DestHostname).
+	caller := &CallerContext{
+		Name:    "ssh",
+		SSHDest: "target.example.com",
+		Env:     map[string]string{},
+	}
+
+	proxy := &ProxyAgent{
+		upstream: &stubExtendedAgent{agent.NewKeyring()},
+		caller:   caller,
+	}
+
+	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
+	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
+	hostKeyBlob := hostSigner.PublicKey().Marshal()
+
+	var payload []byte
+	payload = append(payload, makeSSHString(hostKeyBlob)...)
+	payload = append(payload, makeSSHString([]byte("session-id"))...)
+	payload = append(payload, makeSSHString([]byte("signature"))...)
+	payload = append(payload, 0x00) // forwarded=false
+
+	proxy.Extension("session-bind@openssh.com", payload)
+
+	if caller.SSHDest != "target.example.com" {
+		t.Errorf("SSHDest should be unchanged, got %q", caller.SSHDest)
+	}
+	if caller.ForwardedVia != "" {
+		t.Errorf("ForwardedVia should be empty, got %q", caller.ForwardedVia)
+	}
+}
+
+func TestSessionBindMalformedMovesSSHDestToForwardedVia(t *testing.T) {
+	// Malformed session-bind is treated as forwarded (fail closed).
+	// SSHDest should still be moved to ForwardedVia.
+	caller := &CallerContext{
+		Name:    "ssh",
+		SSHDest: "bastion.example.com",
+		Env:     map[string]string{},
+	}
+
+	proxy := &ProxyAgent{
+		upstream: &stubExtendedAgent{agent.NewKeyring()},
+		caller:   caller,
+	}
+
+	// Truncated payload → parse error → treated as forwarded
+	proxy.Extension("session-bind@openssh.com", []byte{0, 0, 0, 5, 1, 2, 3})
+
+	if caller.SSHDest != "" {
+		t.Errorf("SSHDest should be cleared, got %q", caller.SSHDest)
+	}
+	if caller.ForwardedVia != "bastion.example.com" {
+		t.Errorf("ForwardedVia should be bastion.example.com, got %q", caller.ForwardedVia)
 	}
 }
 

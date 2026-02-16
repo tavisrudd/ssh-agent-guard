@@ -156,7 +156,13 @@ func (p *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, e
 	if extensionType == "session-bind@openssh.com" {
 		info, err := parseSessionBind(contents)
 		if err != nil {
-			log.Printf("session-bind parse: %v", err)
+			// Fail closed: treat unparseable session-bind as forwarded with
+			// unknown destination so that is_forwarded/is_in_known_hosts deny
+			// rules still fire rather than being silently skipped.
+			log.Printf("session-bind parse: %v (treating as forwarded/unknown)", err)
+			p.session = &SessionBindInfo{
+				IsForwarded: true,
+			}
 		} else {
 			// Resolve hostname from known_hosts
 			if p.knownHosts != nil {
@@ -167,6 +173,24 @@ func (p *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, e
 				log.Printf("session-bind: dest=%s fp=%s forwarded=%v caller=%s pid=%d",
 					info.DestHostname, info.DestKeyFingerprint[:19], info.IsForwarded,
 					p.caller.Name, p.caller.PID)
+			}
+		}
+
+		// When the session is forwarded, the local SSH process's cmdline
+		// destination is the intermediate host (the first hop), not the
+		// final destination. Move it to ForwardedVia so that:
+		//   - ssh_dest falls through to session-bind's DestHostname (actual destination)
+		//   - forwarded_via reflects the intermediate hop
+		// Two cases:
+		//   - Non-mux: SSHDest has the intermediate host from cmdline → move it
+		//   - Mux: master renamed its cmdline, SSHDest is empty → extract
+		//     from the socket path using the user's ControlPath format
+		if p.session.IsForwarded {
+			if p.caller.SSHDest != "" {
+				p.caller.ForwardedVia = p.caller.SSHDest
+				p.caller.SSHDest = ""
+			} else if via := extractMuxVia(p.caller.Cmdline); via != "" {
+				p.caller.ForwardedVia = via
 			}
 		}
 	} else if verbose {

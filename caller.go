@@ -1,17 +1,158 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// muxViaRegex extracts host/user from ControlMaster socket paths.
+// Compiled once from the user's ssh ControlPath setting via ssh -G.
+// nil means ControlPath is unset, uses %C (opaque hash), or ssh -G failed.
+var muxViaRegex struct {
+	once    sync.Once
+	pattern *regexp.Regexp
+}
+
+// initMuxViaRegex resolves the user's ControlPath and compiles a regex
+// to extract host/user from mux master socket basenames. Call once at startup.
+func initMuxViaRegex() {
+	muxViaRegex.once.Do(func() {
+		muxViaRegex.pattern = compileMuxViaRegex()
+	})
+}
+
+func compileMuxViaRegex() *regexp.Regexp {
+	sshBin := findBin("ssh")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, sshBin, "-G", "dummy")
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("mux-via: ssh -G failed: %v (forwarded_via unavailable for mux connections)", err)
+		return nil
+	}
+
+	var controlPath string
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "controlpath ") {
+			controlPath = strings.TrimPrefix(line, "controlpath ")
+			break
+		}
+	}
+
+	if controlPath == "" || controlPath == "none" {
+		return nil
+	}
+
+	base := filepath.Base(controlPath)
+	re := compileControlPathRegex(base)
+	if re != nil {
+		log.Printf("mux-via: ControlPath %q → regex %s", controlPath, re.String())
+	} else {
+		log.Printf("mux-via: ControlPath %q not usable for forwarded_via extraction", controlPath)
+	}
+	return re
+}
+
+// compileControlPathRegex converts a ControlPath basename template into a
+// regex with named capture groups for host, port, and user. Returns nil if
+// the template has no %h/%n token (e.g. %C-only) or fails to compile.
+func compileControlPathRegex(base string) *regexp.Regexp {
+	// %C is an opaque SHA256 hash — can't extract host/user
+	if !strings.Contains(base, "%h") && !strings.Contains(base, "%n") {
+		return nil
+	}
+
+	// Convert SSH ControlPath tokens to regex capture groups.
+	// %h/%n → hostname, %p → port, %r → remote user, %C → hex hash
+	var pattern strings.Builder
+	pattern.WriteString("^")
+	for i := 0; i < len(base); i++ {
+		if base[i] == '%' && i+1 < len(base) {
+			switch base[i+1] {
+			case 'h', 'n':
+				pattern.WriteString(`(?P<host>.+?)`)
+			case 'p':
+				pattern.WriteString(`(?P<port>\d+)`)
+			case 'r':
+				pattern.WriteString(`(?P<user>.+?)`)
+			case 'C':
+				pattern.WriteString(`[a-f0-9]+`)
+			case '%':
+				pattern.WriteString(`%`)
+			default:
+				pattern.WriteString(`.+?`)
+			}
+			i++ // skip token character
+		} else {
+			pattern.WriteString(regexp.QuoteMeta(string(base[i])))
+		}
+	}
+	pattern.WriteString("$")
+
+	re, err := regexp.Compile(pattern.String())
+	if err != nil {
+		return nil
+	}
+	return re
+}
+
+// extractMuxVia extracts host/user from a ControlMaster mux cmdline.
+// The mux master renames itself to "ssh: /path/to/socket [mux]", losing
+// the original ssh destination. This function recovers it by parsing the
+// socket basename using the regex compiled from the user's ControlPath.
+// Returns "user@host", "host", or "".
+func extractMuxVia(cmdline string) string {
+	if muxViaRegex.pattern == nil {
+		return ""
+	}
+	if !strings.HasPrefix(cmdline, "ssh: ") || !strings.HasSuffix(cmdline, " [mux]") {
+		return ""
+	}
+
+	socketPath := strings.TrimPrefix(cmdline, "ssh: ")
+	socketPath = strings.TrimSuffix(socketPath, " [mux]")
+	base := filepath.Base(socketPath)
+
+	match := muxViaRegex.pattern.FindStringSubmatch(base)
+	if match == nil {
+		return ""
+	}
+
+	var host, user string
+	for i, name := range muxViaRegex.pattern.SubexpNames() {
+		if i >= len(match) {
+			break
+		}
+		switch name {
+		case "host":
+			host = match[i]
+		case "user":
+			user = match[i]
+		}
+	}
+
+	if host == "" {
+		return ""
+	}
+	if user != "" {
+		return user + "@" + host
+	}
+	return host
+}
 
 // CallerContext holds information about the process that connected to the proxy.
 // Gathered immediately on accept() via SO_PEERCRED + /proc, before the process
@@ -98,11 +239,11 @@ func getCallerContextFromPID(pid int32) *CallerContext {
 	// Walk process ancestry (up to 8 levels)
 	ctx.Ancestry = walkAncestry(ctx.PID, 8)
 
-	// Extract SSH destination from this process or its ancestors
+	// Extract SSH destination from this process or its ancestors.
+	// For forwarded sessions, this is the intermediate host (first hop);
+	// proxy.go's Extension handler moves it to ForwardedVia when
+	// session-bind confirms the session is forwarded.
 	ctx.SSHDest = findSSHDest(ctx)
-
-	// For mux processes, extract the intermediate host from socket path
-	ctx.ForwardedVia = parseMuxViaHost(ctx.Cmdline)
 
 	// Detect forwarded session: sshd in ancestry or SSH_CONNECTION in env
 	ctx.IsForwardedSession = detectForwardedSession(ctx)
@@ -286,28 +427,6 @@ func findSSHDest(ctx *CallerContext) string {
 		if dest := extractSSHDest(a.Cmdline); dest != "" {
 			return dest
 		}
-	}
-	return ""
-}
-
-// parseMuxViaHost extracts the intermediate host from an SSH mux process cmdline.
-// Pattern: "ssh: /path/to/sockets/host_port_user [mux]"
-// ControlPath is typically %h_%p_%r, so the socket name is host_port_user.
-func parseMuxViaHost(cmdline string) string {
-	if !strings.HasPrefix(cmdline, "ssh: ") || !strings.HasSuffix(cmdline, " [mux]") {
-		return ""
-	}
-	socketPath := strings.TrimPrefix(cmdline, "ssh: ")
-	socketPath = strings.TrimSuffix(socketPath, " [mux]")
-
-	base := filepath.Base(socketPath)
-	// ControlPath %h_%p_%r → host_port_user
-	parts := strings.SplitN(base, "_", 3)
-	if len(parts) >= 3 && parts[0] != "" && parts[2] != "" {
-		return parts[2] + "@" + parts[0] // user@host
-	}
-	if len(parts) >= 1 && parts[0] != "" {
-		return parts[0]
 	}
 	return ""
 }

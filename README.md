@@ -1,6 +1,7 @@
 # ssh-agent-guard
 
-> **Beta.** Works and tested, but no independent security review yet.
+> **Beta.** Works and tested, but no independent human security review
+> has been performed — only multiple rounds of LLM/coding-agent reviews.
 > See [SECURITY.md](SECURITY.md) for known limitations.
 
 **Any process running as your user can silently use your SSH keys** —

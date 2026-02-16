@@ -155,11 +155,15 @@ if [ "$RESPONSE" = "$EXPECTED" ]; then
     echo "  Confirmed."
     # Include nonce in response to prove we read the request file (0600).
     # Prevents a same-user attacker from blindly writing "allow" to the FIFO.
-    if [ -n "${NONCE:-}" ]; then
-        echo "allow $NONCE" > "$FIFO"
-    else
-        echo "allow" > "$FIFO"
+    # The daemon requires the nonce — bare "allow" is rejected.
+    if [ -z "${NONCE:-}" ]; then
+        echo "  ERROR: nonce missing from request file — cannot confirm"
+        sleep 2
+        echo "deny" > "$FIFO"
+        wrote_result=true
+        exit 1
     fi
+    echo "allow $NONCE" > "$FIFO"
     wrote_result=true
 else
     echo "  PIN incorrect."
