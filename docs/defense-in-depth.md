@@ -74,6 +74,16 @@ Landlock (unprivileged, no root needed), systemd
 `InaccessiblePaths=`, AppArmor/SELinux, and mount namespaces.  See
 [system setup](system-setup.md) for details and examples.
 
+## Confirmation rate limiting
+
+A same-user process can spam sign requests that trigger confirmation
+prompts, degrading the user experience without gaining access (each
+confirmation is independently authenticated by nonce).  The proxy
+limits concurrent pending confirmations via `confirm.max_pending`
+(default: 3).  Requests beyond this limit are immediately denied.
+See the [policy guide](policy-guide.md#confirmation-rate-limiting)
+for configuration.
+
 ## Keep OpenSSH updated
 
 OpenSSH 8.9+ sends `session-bind@openssh.com`, which is what

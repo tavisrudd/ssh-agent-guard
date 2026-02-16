@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sync/atomic"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
+
+// pendingConfirms tracks the number of in-flight confirmation requests
+// across all connections. Used with ConfirmConfig.MaxPending to prevent
+// same-user processes from flooding the confirmation UI.
+var pendingConfirms atomic.Int32
 
 // ProxyAgent wraps an upstream ExtendedAgent, intercepting operations
 // for logging and policy enforcement. One instance per client connection.
@@ -70,6 +76,21 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey) EvalResult {
 	if result.Action != Confirm {
 		p.logger.LogSign(p.caller, key, p.session, result)
 		return result
+	}
+
+	// Rate-limit concurrent confirmations to prevent prompt flooding.
+	if max := p.confirmCfg.MaxPending; max > 0 {
+		if n := pendingConfirms.Add(1); n > int32(max) {
+			pendingConfirms.Add(-1)
+			dest := SignDest(p.caller, p.session)
+			log.Printf("confirm: rate-limited (%d/%d pending), denying %s → %s",
+				n-1, max, p.caller.Name, dest)
+			result.Action = Deny
+			result.ConfirmMethod = "rate-limited"
+			p.logger.LogSign(p.caller, key, p.session, result)
+			return result
+		}
+		defer pendingConfirms.Add(-1)
 	}
 
 	dest := SignDest(p.caller, p.session)

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -396,6 +397,172 @@ func TestSessionBindMalformedMovesSSHDestToForwardedVia(t *testing.T) {
 	}
 	if caller.ForwardedVia != "bastion.example.com" {
 		t.Errorf("ForwardedVia should be bastion.example.com, got %q", caller.ForwardedVia)
+	}
+}
+
+func TestConfirmRateLimited(t *testing.T) {
+	// Policy that requires confirmation for all sign requests.
+	// With no YubiKey available, confirmation would normally fail with
+	// method=missing. But with rate limiting, requests beyond max_pending
+	// should be denied immediately before even checking for a YubiKey.
+	policy := newTestPolicy(t, "default_action: confirm\nrules: []\n")
+	dir := t.TempDir()
+
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	keyring := agent.NewKeyring()
+	keyring.Add(agent.AddedKey{PrivateKey: priv})
+
+	upstreamPath := filepath.Join(dir, "upstream.sock")
+	upstreamListener, _ := net.Listen("unix", upstreamPath)
+	go func() {
+		for {
+			conn, err := upstreamListener.Accept()
+			if err != nil {
+				return
+			}
+			go agent.ServeAgent(keyring, conn)
+		}
+	}()
+	defer upstreamListener.Close()
+
+	proxyPath := filepath.Join(dir, "proxy.sock")
+	proxyListener, _ := net.Listen("unix", proxyPath)
+	stateDir := filepath.Join(dir, "state")
+	logger := NewLogger(stateDir, policy)
+
+	confirmCfg := &ConfirmConfig{MaxPending: 1}
+	go func() {
+		for {
+			conn, err := proxyListener.Accept()
+			if err != nil {
+				return
+			}
+			go handleConnection(conn, upstreamPath, logger, nil, policy, confirmCfg)
+		}
+	}()
+	defer proxyListener.Close()
+
+	// Simulate one already-pending confirmation
+	pendingConfirms.Store(1)
+	t.Cleanup(func() { pendingConfirms.Store(0) })
+
+	clientConn, _ := net.Dial("unix", proxyPath)
+	defer clientConn.Close()
+	client := agent.NewClient(clientConn)
+
+	keys, err := client.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sign should be denied — counter is at 1 and max is 1
+	_, err = client.Sign(keys[0], []byte("test"))
+	if err == nil {
+		t.Fatal("expected Sign to fail when rate-limited")
+	}
+
+	// Counter should still be 1 (not 2 — the rate-limited request decremented)
+	if n := pendingConfirms.Load(); n != 1 {
+		t.Errorf("expected pendingConfirms=1, got %d", n)
+	}
+
+	// Verify the log file records the rate limiting
+	time.Sleep(100 * time.Millisecond)
+	entries, _ := os.ReadDir(stateDir)
+	foundRateLimited := false
+	for _, e := range entries {
+		if e.Name() == "current.yaml" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(stateDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), "rate-limited") {
+			foundRateLimited = true
+		}
+	}
+	if !foundRateLimited {
+		t.Error("expected a log file with confirm_method: rate-limited")
+	}
+}
+
+func TestConfirmRateLimitAllowsUnderMax(t *testing.T) {
+	// With max_pending: 2 and 0 pending, a confirm request should NOT be
+	// rate-limited. It will still fail (no YubiKey) but via a different path.
+	policy := newTestPolicy(t, "default_action: confirm\nrules: []\n")
+	dir := t.TempDir()
+
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	keyring := agent.NewKeyring()
+	keyring.Add(agent.AddedKey{PrivateKey: priv})
+
+	upstreamPath := filepath.Join(dir, "upstream.sock")
+	upstreamListener, _ := net.Listen("unix", upstreamPath)
+	go func() {
+		for {
+			conn, err := upstreamListener.Accept()
+			if err != nil {
+				return
+			}
+			go agent.ServeAgent(keyring, conn)
+		}
+	}()
+	defer upstreamListener.Close()
+
+	proxyPath := filepath.Join(dir, "proxy.sock")
+	proxyListener, _ := net.Listen("unix", proxyPath)
+	stateDir := filepath.Join(dir, "state")
+	logger := NewLogger(stateDir, policy)
+
+	confirmCfg := &ConfirmConfig{MaxPending: 2}
+	go func() {
+		for {
+			conn, err := proxyListener.Accept()
+			if err != nil {
+				return
+			}
+			go handleConnection(conn, upstreamPath, logger, nil, policy, confirmCfg)
+		}
+	}()
+	defer proxyListener.Close()
+
+	// Start with 0 pending
+	pendingConfirms.Store(0)
+	t.Cleanup(func() { pendingConfirms.Store(0) })
+
+	clientConn, _ := net.Dial("unix", proxyPath)
+	defer clientConn.Close()
+	client := agent.NewClient(clientConn)
+
+	keys, err := client.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sign will still fail (no YubiKey), but it should NOT be rate-limited.
+	// The confirm attempt proceeds, fails with method=missing, and the counter
+	// should be back to 0 after the request completes.
+	_, _ = client.Sign(keys[0], []byte("test"))
+
+	time.Sleep(100 * time.Millisecond)
+	if n := pendingConfirms.Load(); n != 0 {
+		t.Errorf("expected pendingConfirms=0 after completed request, got %d", n)
+	}
+
+	// Verify the log does NOT show rate-limited
+	entries, _ := os.ReadDir(stateDir)
+	for _, e := range entries {
+		if e.Name() == "current.yaml" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(stateDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), "rate-limited") {
+			t.Error("should not be rate-limited when under max")
+		}
 	}
 }
 

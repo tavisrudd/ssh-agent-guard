@@ -302,6 +302,29 @@ To check a specific process:
 $ ssh-agent-guard --check --pid 4521 --key SHA256:abc123
 ```
 
+## Confirmation rate limiting
+
+The `confirm.max_pending` setting limits the number of concurrent
+pending confirmations.  When the limit is reached, additional confirm
+requests are immediately denied.
+
+```yaml
+confirm:
+  max_pending: 3    # default
+```
+
+This prevents a same-user process from flooding the confirmation UI
+with rapid sign requests.  Rate-limited denials are logged with
+`confirm_method: rate-limited` and appear in the journal as:
+
+```
+confirm: rate-limited (3/3 pending), denying npm → unknown
+```
+
+Set to `0` to disable the limit entirely.  The default of 3 is
+sufficient for normal use — even aggressive git operations rarely
+produce more than 2 concurrent sign requests.
+
 ## Tips
 
 - **Start permissive, tighten gradually.** Begin with `default_action:

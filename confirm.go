@@ -29,6 +29,9 @@ type ConfirmConfig struct {
 
 	// Explicit deny (touch file to cancel any pending confirm)
 	DenyPath string
+
+	// Rate limiting: max concurrent pending confirmations (0 = unlimited)
+	MaxPending int
 }
 
 func DefaultConfirmConfig() ConfirmConfig {
@@ -38,6 +41,7 @@ func DefaultConfirmConfig() ConfirmConfig {
 		Timeout:    20 * time.Second,
 		PINSlot:    "1",
 		PINTimeout: 120 * time.Second,
+		MaxPending: 3,
 	}
 }
 

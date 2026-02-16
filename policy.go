@@ -72,6 +72,11 @@ type ConfirmPolicyYAML struct {
 	// different YubiKey slot (no touch required). Used when no local
 	// display is available (e.g. SSH session).
 	PIN PINConfirmYAML `yaml:"pin,omitempty"`
+
+	// MaxPending limits the number of concurrent pending confirmations.
+	// Excess requests are immediately denied. Prevents same-user processes
+	// from flooding the confirmation UI. 0 means unlimited. Default: 3.
+	MaxPending *int `yaml:"max_pending,omitempty"`
 }
 
 // TouchConfirmYAML configures local YubiKey HMAC touch confirmation.
@@ -605,6 +610,11 @@ func buildConfirmConfig(config *PolicyConfig) ConfirmConfig {
 		} else {
 			log.Printf("policy: invalid confirm.pin.timeout %q: %v", c.PIN.Timeout, err)
 		}
+	}
+
+	// Rate limiting
+	if c.MaxPending != nil {
+		cfg.MaxPending = *c.MaxPending
 	}
 
 	return cfg
