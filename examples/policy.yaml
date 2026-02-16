@@ -1,0 +1,63 @@
+# ssh-agent-guard example policy
+#
+# Rules are evaluated top-to-bottom; first match wins.
+# All fields in a match section must match (AND logic).
+# Omitted fields match anything.
+#
+# See ssh-agent-guard-policy(5) for full documentation.
+
+default_action: allow
+
+# Extra directories to search for ykchalresp, ykinfo, tmux, etc.
+# path:
+#   - ~/bin
+#   - /usr/local/bin
+
+# YubiKey confirmation settings (optional — defaults shown below).
+# confirm:
+#   touch:                    # YubiKey HMAC-SHA1 challenge, requires physical touch
+#     challenge: "deadbeef"   # Hex string sent as HMAC challenge
+#     slot: "2"               # YubiKey HMAC slot
+#     timeout: "20s"          # Max wait for touch
+#   pin:                      # PIN typed in tmux popup, no touch required
+#     slot: "1"               # YubiKey HMAC slot
+#     timeout: "120s"         # Max wait for PIN entry
+
+rules:
+  # Git operations to well-known hosts — always allow
+  - name: git-hosts
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+
+  # AI coding tools — require confirmation
+  - name: ai-tools
+    match:
+      env:
+        CLAUDECODE: "1"
+    action: confirm
+
+  # Containers — deny by default (incomplete caller identity)
+  - name: container-deny
+    match:
+      is_in_container: true
+    action: deny
+
+  # Direct SSH to hosts in known_hosts — allow
+  - name: direct-known
+    match:
+      is_in_known_hosts: true
+    action: allow
+
+  # Forwarded agent to hosts in known_hosts — allow
+  - name: forwarded-known
+    match:
+      is_forwarded: true
+      is_in_known_hosts: true
+    action: allow
+
+  # Forwarded agent to unknown hosts — deny
+  - name: forwarded-unknown
+    match:
+      is_forwarded: true
+    action: deny

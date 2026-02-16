@@ -1,0 +1,9 @@
+# Build output
+ssh-agent-guard
+ssh-agent-guard-linux-*
+
+# Nix
+result
+
+# direnv
+.direnv/

@@ -1,0 +1,516 @@
+.nh
+.TH SSH-AGENT-GUARD 1 "2026-02-15" "ssh-agent-guard" "User Commands"
+
+.SH NAME
+ssh-agent-guard \- policy-enforcing proxy for SSH agent sockets
+
+
+.SH SYNOPSIS
+\fBssh-agent-guard\fP
+[\fB--listen\fP \fIpath\fP]
+[\fB--upstream\fP \fIpath\fP]
+[\fB--state-dir\fP \fIpath\fP]
+[\fB--policy\fP \fIpath\fP]
+[\fB--verbose\fP]
+
+.PP
+\fBssh-agent-guard\fP \fB--check\fP
+[\fB--pid\fP \fIpid\fP]
+[\fB--key\fP \fIfingerprint\fP]
+[\fB--policy\fP \fIpath\fP]
+
+
+.SH DESCRIPTION
+\fBssh-agent-guard\fP sits between SSH clients and a real SSH agent
+(typically gpg-agent), intercepting all SSH agent protocol messages.
+It identifies each connecting process via SO_PEERCRED(7) and /proc,
+evaluates a YAML policy to allow, deny, or require confirmation for
+signing requests, and logs all operations to structured YAML files and
+journald.
+
+.PP
+Key management operations (add, remove, lock, unlock) are always blocked;
+the proxy is read-only by design.
+
+.PP
+For sign requests requiring confirmation, the proxy supports two methods
+selected automatically based on context:
+.TP
+\fBhmac\fP
+YubiKey HMAC challenge-response (slot 2) when a local display is active.
+The user touches the YubiKey to approve.
+
+.TP
+\fBremote\fP
+HMAC PIN entry via a tmux popup when no display is active but a YubiKey
+is present.
+The user presses a tmux keybinding to open the confirm prompt.
+
+.PP
+If neither method is available (no display and no YubiKey), confirmation
+requests are denied with method \fBmissing\fP\&.
+
+
+.SH OPTIONS
+.SS Daemon mode (default)
+.TP
+\fB--listen\fP \fIpath\fP
+Unix socket path for the proxy to listen on.
+Default: \fI$XDG_RUNTIME_DIR/ssh-agent-guard.sock\fP\&.
+
+.TP
+\fB--upstream\fP \fIpath\fP
+Unix socket path of the real SSH agent to proxy to.
+Default: \fI$XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh\fP\&.
+
+.TP
+\fB--state-dir\fP \fIpath\fP
+Directory for YAML event logs and status files.
+Default: \fI~/.local/state/ssh-ag\fP\&.
+
+.TP
+\fB--policy\fP \fIpath\fP
+Path to the policy configuration file.
+See \fBssh-agent-guard-policy\fP(5).
+Default: \fI~/.config/ssh-ag/policy.yaml\fP\&.
+
+.TP
+\fB--verbose\fP
+Log all operations, including key listing requests (normally suppressed).
+
+.SS Check mode
+.TP
+\fB--check\fP
+Gather caller context for a process and evaluate it against the policy,
+printing results as YAML.
+Does not start a daemon.
+Useful for debugging policy rules.
+
+.TP
+\fB--pid\fP \fIpid\fP
+PID to inspect in check mode.
+Default: the parent process (the shell running the command).
+
+.TP
+\fB--key\fP \fIfingerprint\fP
+Key fingerprint (\fISHA256:...\fP) to include in policy evaluation during
+check mode.
+
+
+.SH SIGNALS
+.TP
+\fBSIGHUP\fP
+Reload the policy file and known_hosts.
+If the new policy fails to parse, the previous policy is retained.
+
+.TP
+\fBSIGINT\fP, \fBSIGTERM\fP
+Shut down gracefully, removing the listen socket.
+
+
+.SH CALLER IDENTIFICATION
+On each connection, the proxy gathers context about the connecting
+process:
+.TP
+\fBPID, UID, GID\fP
+From SO_PEERCRED(7), kernel-verified at connect(2) time.
+
+.TP
+\fBProcess name, command line, working directory\fP
+From \fI/proc/$pid/cmdline\fP, \fI/proc/$pid/cwd\fP\&.
+Nix wrapper names (\fI\&.foo-wrapped\fP) are unwrapped automatically.
+
+.TP
+\fBEnvironment\fP
+Selected variables from \fI/proc/$pid/environ\fP:
+\fBSSH_CONNECTION\fP, \fBSSH_TTY\fP, \fBDISPLAY\fP, \fBWAYLAND_DISPLAY\fP,
+\fBTERM\fP, \fBTMUX_PANE\fP, \fBCLAUDECODE\fP\&.
+
+.TP
+\fBAncestry\fP
+Process tree walked via \fI/proc/$pid/stat\fP up to 8 levels.
+
+.TP
+\fBSSH destination\fP
+Extracted from the ssh command line (self or ancestors), with
+flag-aware argument parsing.
+
+.TP
+\fBTmux window\fP
+Resolved from \fBTMUX_PANE\fP via \fBtmux\fP(1) display-message.
+
+.TP
+\fBRemote session\fP
+Detected via tmux global environment, process environment, or sshd
+in ancestry.
+
+.TP
+\fBContainer\fP
+Detected by comparing PID namespaces between proxy and caller via
+\fI/proc/self/ns/pid\fP\&.
+
+.TP
+\fBForwarded agent\fP
+Detected via the \fBsession-bind@openssh.com\fP agent protocol extension
+(OpenSSH 8.9+), with reverse host key lookup through
+\fI~/.ssh/known_hosts\fP\&.
+
+
+.SH THREAT MODEL
+ssh-agent-guard is designed to protect SSH signing keys on a Linux
+workstation where the user runs a mix of trusted and less-trusted
+software under the same Unix account.
+
+.SS What it protects against
+.IP \(bu 2
+\fBUnauthorized local signing\fP — a compromised or untrusted process
+(AI coding tool, downloaded script, browser exploit) attempts to sign
+with your SSH key.  The proxy identifies the caller and applies policy
+rules to allow, deny, or require physical confirmation.
+.IP \(bu 2
+\fBForwarded agent abuse\fP — a remote host you SSH into attempts to
+use your forwarded agent to sign for destinations you didn't intend.
+The proxy intercepts \fBsession-bind@openssh.com\fR to detect forwarding
+and can restrict which remote destinations are permitted.
+.IP \(bu 2
+\fBKey management tampering\fP — a process attempts to add, remove,
+lock, or unlock keys on your agent.  All mutation operations are
+unconditionally blocked.
+.IP \(bu 2
+\fBSilent signing\fP — without the proxy, any signing operation is
+invisible.  The proxy logs every sign request with full caller context
+(process name, command line, ancestry, working directory, environment)
+to structured YAML files and journald.
+
+.SS What it does NOT protect against
+.IP \(bu 2
+\fBSame-user socket access\fP (without system hardening) — by default,
+any process running as your user can connect directly to the upstream
+agent socket, bypassing the proxy entirely.  See the system setup
+section for filesystem-level protections that close this gap.
+.IP \(bu 2
+\fBRoot compromise\fP — a root-level attacker can read any socket,
+ptrace any process, and bypass all user-level controls.
+.IP \(bu 2
+\fBTOCTOU\fP (time-of-check-time-of-use) — caller identity is gathered
+at connect(2) time via SO_PEERCRED.  If a process calls exec(2)
+between connecting and signing, the policy evaluation uses the
+pre-exec identity.  In practice this is a narrow window (microseconds)
+and requires a process specifically designed to exploit it.
+.IP \(bu 2
+\fBYubiKey coercion\fP — if confirmation is required and an attacker has
+physical access to your YubiKey (or can socially engineer you into
+touching it), the confirmation can be bypassed.
+.IP \(bu 2
+\fB/proc races\fP — the proxy reads /proc/$pid/* after obtaining the PID
+via SO_PEERCRED.  If the PID is recycled before the reads complete,
+the proxy may read stale or wrong process information.  PID recycling
+attacks require precise timing and are impractical on systems with
+large PID ranges (kernel.pid_max).
+.IP \(bu 2
+\fBContainer callers with incomplete identity\fP — a container process
+with access to the socket (via bind mount) can connect, but its /proc
+entries may be invisible or in a different PID namespace.  The proxy
+detects PID namespace mismatches and marks such callers as
+\fBcontainer=true\fR, but the caller identity fields (name, command,
+ancestry) may be unavailable.  Policy rules should default to deny or
+confirm for container callers.
+
+.SS Without socket protection
+Even without filesystem hardening, the proxy provides substantial value:
+.IP \(bu 2
+\fBAudit logging\fP of all signing operations with full caller context
+.IP \(bu 2
+\fBPhysical confirmation\fP via YubiKey for sensitive operations
+.IP \(bu 2
+\fBPolicy enforcement\fP for all well-behaved software that respects
+\fBSSH_AUTH_SOCK\fR (ssh, git, rsync, and nearly all SSH clients)
+.IP \(bu 2
+\fBMutation blocking\fP (add/remove/lock/unlock always denied)
+
+.PP
+Most real-world threats (AI coding tools, scripts, forwarded sessions)
+use \fBSSH_AUTH_SOCK\fR and will be subject to the proxy's policy.  Direct
+socket access requires deliberately discovering and connecting to the
+upstream path.
+
+
+.SH SYSTEM SETUP
+To be effective, the proxy must be the \fIonly\fP path to the SSH agent
+for untrusted processes.  This requires two things:
+.IP "  1." 5
+The upstream agent socket must be inaccessible to normal processes.
+.IP "  2." 5
+\fBSSH_AUTH_SOCK\fR must point to the proxy's listen socket.
+
+.SS Socket protection with filesystem permissions
+The strongest user-level approach uses directory permissions to hide the
+upstream socket:
+
+.EX
+# Create a restricted directory for the real agent socket
+mkdir -m 0700 "$XDG_RUNTIME_DIR/agent-upstream"
+
+# Configure gpg-agent to use the restricted path
+# (in ~/.gnupg/gpg-agent.conf, extra-socket directive)
+extra-socket /run/user/1000/agent-upstream/S.gpg-agent.ssh
+
+# Run the guard with access to the restricted socket
+ssh-agent-guard \\
+    --listen "$XDG_RUNTIME_DIR/ssh-agent-guard.sock" \\
+    --upstream "$XDG_RUNTIME_DIR/agent-upstream/S.gpg-agent.ssh"
+
+# Point clients at the guard
+export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent-guard.sock"
+.EE
+
+.PP
+Other processes cannot traverse the restricted directory to reach the
+real socket.
+
+.PP
+\fBNote:\fP This does not protect against root or processes with
+CAP_DAC_READ_SEARCH.
+
+.SS Minimal setup (without socket protection)
+If you don't need hard isolation, simply interpose the proxy on the
+default socket path:
+
+.EX
+ssh-agent-guard \\
+    --listen "$XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh.guard" \\
+    --upstream "$XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh"
+
+export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh.guard"
+.EE
+
+.PP
+This provides logging, policy, and confirmation for all processes
+that use \fBSSH_AUTH_SOCK\fR, but does not prevent direct access to the
+upstream socket.
+
+
+.SH FILES
+.TP
+\fB~/.config/ssh-ag/policy.yaml\fP
+Policy configuration.
+See \fBssh-agent-guard-policy\fP(5).
+
+.TP
+\fB~/.local/state/ssh-ag/\fP
+Event log directory.
+Each sign or mutation event produces a timestamped YAML file.
+
+.TP
+\fB~/.local/state/ssh-ag/current.yaml\fP
+Live status file consumed by status bar renderers (i3status-rs, tmux).
+Contains current state (idle/confirming), pending request details, and
+previous event.
+
+.TP
+\fB~/.local/state/ssh-ag/config_error.yaml\fP
+Written when the policy file fails to parse; removed on successful load.
+
+.TP
+\fB~/.local/state/ssh-ag/confirm/denied\fP
+Deny file.
+Touch this file to cancel any pending confirmation.
+The proxy detects it by mtime, so stale files from previous sessions
+are ignored.
+
+.TP
+\fB~/.local/state/ssh-ag/confirm/$serial.response\fP
+Expected HMAC response for a specific YubiKey serial number.
+Used to verify YubiKey identity during confirmation.
+
+.TP
+\fB~/.local/state/ssh-ag/pending/\fP
+Directory for remote confirmation requests (FIFO-based).
+
+.TP
+\fB~/.ssh/known_hosts\fP
+Parsed for reverse host key fingerprint to hostname mapping, enabling
+\fBremote_dest\fP policy matching on forwarded agent sessions.
+Hashed entries (\fBHashKnownHosts\fP) are skipped (irreversible by design).
+
+
+.SH REQUIREMENTS
+.IP \(bu 2
+\fBLinux\fP — uses SO_PEERCRED(7), /proc, and PID namespaces.
+No macOS or BSD support.
+.IP \(bu 2
+\fBOpenSSH 8.9+\fP — required for \fBsession-bind@openssh.com\fR, which
+provides forwarded agent detection, destination host identification,
+and \fBremote_dest\fR/\fBremote_dest_in\fR/\fBforwarded\fR policy matching.
+Without it the guard still works but those fields are always empty.
+.IP \(bu 2
+\fBGo 1.24+\fP — for building from source.
+
+.SS Optional dependencies
+.IP \(bu 2
+\fByubikey-personalization\fP — provides \fBykchalresp\fR and \fBykinfo\fR,
+used for YubiKey HMAC confirmation.  When installed via the Nix flake,
+these are included in the wrapper's PATH.  Without a YubiKey,
+\fBaction: confirm\fR rules degrade to \fBdeny\fR\&.
+.IP \(bu 2
+\fBtmux\fP — used for remote confirmation popups (\fBssh-ag-confirm\fR
+runs in a tmux popup), status display (sets \fB@ssh_ag_status\fR user
+option), and remote session detection.
+.IP \(bu 2
+\fBsway\fP — \fBhasActiveDisplay()\fR uses \fBswaymsg\fR to check compositor
+reachability and detect \fBswaylock\fR\&.  Other Wayland/X11 compositors
+would need equivalent logic.
+.IP \(bu 2
+\fBjq\fP — used by \fBhasActiveDisplay()\fR to parse sway output JSON.
+.IP \(bu 2
+\fBi3status-rs\fP — \fBssh-ag-render-status\fR writes pango markup to a
+file watched by i3status-rs.  Other status bars would need a
+different renderer.
+
+.PP
+The core proxy (policy evaluation, caller identification, logging)
+has no compositor or multiplexer dependencies — only the confirmation
+UI and status rendering do.
+
+
+.SH YUBIKEY SETUP
+ssh-agent-guard uses YubiKey HMAC-Challenge slots for physical
+confirmation of signing requests.  Two slots are used:
+.IP \(bu 2
+\fBSlot 2\fP (default) — touch confirmation.  A fixed challenge is sent
+to the YubiKey; the user must physically touch the key to generate a
+response.  Used when a local display is active.
+.IP \(bu 2
+\fBSlot 1\fP (default) — PIN confirmation.  The user's PIN is sent as
+the HMAC challenge; no touch required.  Used when no local display is
+active (remote sessions via tmux popup).
+
+.PP
+Slot numbers are configurable via the \fBconfirm.touch.slot\fR and
+\fBconfirm.pin.slot\fR policy fields.  See ssh-agent-guard-policy(5).
+
+.SS Linux permissions
+\fBykchalresp\fR and \fBykinfo\fR communicate with the YubiKey over USB HID via
+libusb.  This requires udev rules granting access to Yubico devices
+(vendor ID 1050):
+
+.EX
+# NixOS (configuration.nix)
+services.udev.packages = [ pkgs.yubikey-personalization ];
+
+# Debian/Ubuntu
+sudo apt install yubikey-personalization
+
+# Manual udev rule
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1050", MODE="0660", GROUP="plugdev"
+.EE
+
+.SS Programming HMAC slots
+Use \fBykman\fR to program the HMAC-Challenge slots:
+
+.EX
+# Slot 2: touch confirmation (requires physical touch)
+ykman otp chalresp --touch --generate 2
+
+# Slot 1: PIN confirmation (no touch, responds immediately)
+ykman otp chalresp --generate 1
+.EE
+
+.SS Registering the expected response
+After programming the slots, generate and store the expected HMAC
+response so the guard can verify the YubiKey's identity:
+
+.EX
+# Get YubiKey serial number
+SERIAL=$(ykinfo -s | grep -o '[0-9]*')
+
+# Generate expected response for slot 2 (touch — tap the key)
+# Uses the challenge from your policy (default: "deadbeef")
+RESPONSE=$(ykchalresp -2 deadbeef)
+
+# Store it
+mkdir -p ~/.local/state/ssh-ag/confirm
+echo "$RESPONSE" > ~/.local/state/ssh-ag/confirm/${SERIAL}.response
+.EE
+
+.PP
+For PIN confirmation (slot 1), response files use different naming;
+the \fBssh-ag-confirm\fR script handles this automatically.
+
+.PP
+The challenge string and slot numbers are configurable in the policy
+file's \fBconfirm:\fR section.  See ssh-agent-guard-policy(5).
+
+
+.SH ENVIRONMENT
+.TP
+\fBSSH_AUTH_SOCK\fP
+Clients should set this to the proxy's listen socket to route through
+the proxy.
+
+.TP
+\fBXDG_RUNTIME_DIR\fP
+Used to derive default socket paths.
+Falls back to \fI/run/user/$UID\fP\&.
+
+.TP
+\fBHOME\fP
+Used to derive default paths for state, policy, and known_hosts.
+
+.TP
+\fBSSH_AG_EXCLUDE_OUTPUTS\fP
+Comma-separated list of sway output names to ignore when detecting
+an active display for confirmation method selection.
+Useful for built-in LCDs that remain active but don't indicate user
+presence (e.g., \fBDSI-1\fP).
+
+
+.SH EXAMPLES
+Start the proxy with default paths:
+
+.EX
+ssh-agent-guard
+.EE
+
+.PP
+Start with explicit paths:
+
+.EX
+ssh-agent-guard \\
+    --listen /run/user/1000/ssh-agent-guard.sock \\
+    --upstream /run/user/1000/gnupg/S.gpg-agent.ssh \\
+    --state-dir ~/.local/state/ssh-ag \\
+    --policy ~/.config/ssh-ag/policy.yaml
+.EE
+
+.PP
+Debug policy matching for the current shell:
+
+.EX
+ssh-agent-guard --check
+.EE
+
+.PP
+Debug policy matching for a specific process and key:
+
+.EX
+ssh-agent-guard --check --pid 12345 --key SHA256:abc123
+.EE
+
+.PP
+Reload policy after editing:
+
+.EX
+systemctl --user reload ssh-agent-guard
+.EE
+
+.PP
+Cancel a pending YubiKey confirmation:
+
+.EX
+touch ~/.local/state/ssh-ag/confirm/denied
+.EE
+
+
+.SH SEE ALSO
+\fBssh-agent-guard-policy\fP(5), \fBssh-agent\fP(1), \fBgpg-agent\fP(1), \fBssh\fP(1)

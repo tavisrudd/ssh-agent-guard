@@ -1,0 +1,162 @@
+#!/bin/bash
+# ssh-ag-confirm — remote confirmation helper for ssh-agent-guard
+#
+# Activated by a tmux keybinding (e.g. prefix+C). Finds the latest pending
+# confirmation request, displays details, prompts for a PIN, verifies it
+# via YubiKey HMAC slot 1 (no touch required), and writes the result to a FIFO.
+#
+# Usage: ssh-ag-confirm
+#   (no args — finds latest pending request automatically)
+#
+# Or: ssh-ag-confirm <request.yaml> <result.fifo>
+#   (explicit paths, used internally)
+
+set -euo pipefail
+
+# Ensure PATH includes common bin dirs
+for p in /run/current-system/sw/bin /usr/bin "$HOME/.nix-profile/bin"; do
+    case ":$PATH:" in
+        *":$p:"*) ;;
+        *) PATH="$p:$PATH" ;;
+    esac
+done
+
+STATE_DIR="$HOME/.local/state/ssh-ag"
+PENDING_DIR="$STATE_DIR/pending"
+CONFIRM_DIR="$STATE_DIR/confirm"
+
+# Load PIN slot config (written by ssh-agent-guard on policy load)
+PIN_SLOT=1  # default
+if [ -f "$CONFIRM_DIR/pin.env" ]; then
+    # shellcheck source=/dev/null
+    . "$CONFIRM_DIR/pin.env"
+fi
+
+# Find request and FIFO — either from args or latest pending
+if [ $# -ge 2 ]; then
+    REQ="$1"
+    FIFO="$2"
+else
+    # Find the latest pending .yaml that has a matching .result FIFO
+    REQ=""
+    FIFO=""
+    for yaml in "$PENDING_DIR"/*.yaml; do
+        [ -f "$yaml" ] || continue
+        fifo="${yaml%.yaml}.result"
+        [ -p "$fifo" ] || continue
+        REQ="$yaml"
+        FIFO="$fifo"
+    done
+    if [ -z "$REQ" ]; then
+        echo "  No pending confirmation requests."
+        sleep 2
+        exit 0
+    fi
+fi
+
+# Ensure we write a result even on unexpected exit
+wrote_result=false
+cleanup() {
+    local rc=$?
+    if ! $wrote_result && [ -p "$FIFO" ]; then
+        echo "deny" > "$FIFO"
+    fi
+    if [ $rc -ne 0 ] || ! $wrote_result; then
+        echo "  [press enter to close]"
+        read -r _ 2>/dev/null || sleep 5
+    fi
+}
+trap cleanup EXIT
+
+# Simple YAML field extraction (pure bash, no external commands)
+field() {
+    while IFS= read -r line; do
+        case "$line" in
+            "$1:"*)
+                val="${line#"$1:"}"
+                val="${val#"${val%%[![:space:]]*}"}"
+                val="${val%"${val##*[![:space:]]}"}"
+                echo "$val"
+                return
+                ;;
+        esac
+    done < "$REQ"
+}
+
+CALLER=$(field caller)
+DEST=$(field dest)
+KEY=$(field key)
+WINDOW=$(field tmux_window)
+CWD=$(field cwd)
+
+# Display request details
+echo ""
+echo "  ━━━ SSH Agent Sign Request ━━━"
+echo ""
+echo "  Caller:  ${CALLER:-unknown}"
+[ -n "${WINDOW:-}" ] && echo "  Window:  $WINDOW"
+echo "  Dest:    ${DEST:-unknown}"
+echo "  Key:     ${KEY:-unknown}"
+[ -n "${CWD:-}" ] && echo "  CWD:     $CWD"
+echo ""
+
+# Load expected HMAC response for the configured PIN slot
+EXPECTED=""
+RESPONSE_FILE="$CONFIRM_DIR/slot${PIN_SLOT}.response"
+if [ -f "$RESPONSE_FILE" ]; then
+    EXPECTED=$(cat "$RESPONSE_FILE")
+fi
+
+if [ -z "$EXPECTED" ]; then
+    echo "  ERROR: no slot${PIN_SLOT}.response file in $CONFIRM_DIR"
+    sleep 2
+    echo "deny" > "$FIFO"
+    wrote_result=true
+    exit 1
+fi
+
+# Find ykchalresp
+YKCHALRESP=""
+for p in /run/current-system/sw/bin/ykchalresp /usr/bin/ykchalresp; do
+    if [ -x "$p" ]; then
+        YKCHALRESP="$p"
+        break
+    fi
+done
+if [ -z "$YKCHALRESP" ]; then
+    YKCHALRESP=$(command -v ykchalresp 2>/dev/null || true)
+fi
+if [ -z "$YKCHALRESP" ]; then
+    echo "  ERROR: ykchalresp not found"
+    sleep 2
+    echo "deny" > "$FIFO"
+    wrote_result=true
+    exit 1
+fi
+
+# Prompt for PIN
+echo -n "  PIN: "
+read -rs PIN
+echo ""
+
+if [ -z "$PIN" ]; then
+    echo "  Cancelled."
+    sleep 1
+    echo "deny" > "$FIFO"
+    wrote_result=true
+    exit 0
+fi
+
+# Verify PIN via configured HMAC slot (no touch required)
+RESPONSE=$(echo -n "$PIN" | "$YKCHALRESP" -"$PIN_SLOT" -i- 2>/dev/null) || true
+
+if [ "$RESPONSE" = "$EXPECTED" ]; then
+    echo "  Confirmed."
+    echo "allow" > "$FIFO"
+    wrote_result=true
+else
+    echo "  PIN incorrect."
+    sleep 1
+    echo "deny" > "$FIFO"
+    wrote_result=true
+fi

@@ -1,0 +1,367 @@
+.nh
+.TH SSH-AGENT-GUARD-POLICY 5 "2026-02-15" "ssh-agent-guard" "File Formats"
+
+.SH NAME
+ssh-agent-guard-policy \- policy configuration for ssh-agent-guard
+
+
+.SH SYNOPSIS
+\fI~/.config/ssh-ag/policy.yaml\fP
+
+
+.SH DESCRIPTION
+The policy file controls how \fBssh-agent-guard\fP(1) handles signing
+requests.  It is a YAML file with a default action, optional binary
+search paths, and an ordered list of rules.  Rules are evaluated
+top-to-bottom; the first matching rule wins.  If no rule matches, the
+default action applies.
+
+.PP
+The policy file is watched via inotify(7) and reloaded automatically
+on changes.  It can also be reloaded by sending \fBSIGHUP\fP to the proxy.
+If a reload fails to parse, the previous policy is retained and the
+error is written to \fIconfig_error.yaml\fP\&.
+
+.PP
+If the policy file is missing at startup, the proxy defaults to
+\fBconfirm\fP for all requests.
+
+
+.SH FILE FORMAT
+.EX
+default_action: allow | deny | confirm
+
+path:
+  - ~/bin
+  - /usr/local/bin
+
+confirm:
+  touch:
+    challenge: "deadbeef"
+    slot: "2"
+    timeout: "20s"
+  pin:
+    slot: "1"
+    timeout: "120s"
+
+rules:
+  - name: rule-label
+    match:
+      field: value
+      ...
+    action: allow | deny | confirm
+.EE
+
+.SS Top-level fields
+.TP
+\fBdefault_action\fP
+Action when no rule matches.
+One of \fBallow\fP, \fBdeny\fP, \fBconfirm\fP\&.
+Default: \fBallow\fP\&.
+
+.TP
+\fBpath\fP
+List of additional directories to search for external binaries
+(\fBykchalresp\fP, \fBykinfo\fP, \fBtmux\fP, etc.).
+Tilde expansion is supported.
+Searched before system defaults (\fI/run/current-system/sw/bin\fP,
+\fI/usr/bin\fP) and \fBPATH\fP\&.
+
+.TP
+\fBrules\fP
+Ordered list of rules.
+Each rule has a \fBmatch\fP section and an \fBaction\fP\&.
+
+.TP
+\fBconfirm\fP
+Optional section configuring YubiKey confirmation behavior.
+Contains two subsections: \fBtouch\fP (local HMAC confirmation) and
+\fBpin\fP (remote PIN confirmation via tmux popup).
+All fields have defaults; the section can be omitted entirely.
+
+.TP
+\fBconfirm.touch.challenge\fP
+Hex string sent as the HMAC-SHA1 challenge to the YubiKey.
+Default: \fB"deadbeef"\fP\&.
+
+.TP
+\fBconfirm.touch.slot\fP
+YubiKey HMAC slot number for touch confirmation.
+Default: \fB"2"\fP\&.
+
+.TP
+\fBconfirm.touch.timeout\fP
+Maximum time to wait for the user to touch the YubiKey.
+Go duration format (e.g., \fB20s\fP, \fB1m\fP).
+Default: \fB20s\fP\&.
+
+.TP
+\fBconfirm.pin.slot\fP
+YubiKey HMAC slot number for PIN confirmation.
+The user's PIN is sent as the HMAC challenge to this slot
+(no touch required).
+Default: \fB"1"\fP\&.
+
+.TP
+\fBconfirm.pin.timeout\fP
+Maximum time to wait for the user to enter a PIN via the
+tmux popup.
+Default: \fB120s\fP\&.
+
+.SS Actions
+.TP
+\fBallow\fP
+Permit the signing request and forward it to the upstream agent.
+
+.TP
+\fBdeny\fP
+Reject the signing request.
+The client receives an error.
+
+.TP
+\fBconfirm\fP
+Require physical confirmation before allowing.
+The confirmation method is chosen automatically:
+\fBhmac\fP (YubiKey touch) when a local display is active,
+\fBremote\fP (tmux popup PIN) when no display but YubiKey is present,
+or deny with method \fBmissing\fP when neither is available.
+
+
+.SH MATCH FIELDS
+All specified fields in a rule must match (AND logic).
+Omitted fields are wildcards (match anything).
+An empty \fBmatch\fP section matches everything.
+
+.SS String fields
+String fields support two pattern modes:
+.TP
+\fBGlob\fP
+Simple wildcard matching with \fB*\fP (any characters) and \fB?\fP
+(single character).
+This is the default.
+
+.TP
+\fBRegex\fP
+Prefix the pattern with \fB~\fP to use Go regular expressions.
+Example: \fB~^ssh-.*$\fP\&.
+
+.SS Available match fields
+.TP
+\fBcaller:\fP \fIname\fP | [\fIname1\fP, \fIname2\fP]
+Process name of the connecting client.
+Nix wrappers are automatically unwrapped
+(\fI\&.ssh-wrapped\fP becomes \fBssh\fP).
+Accepts a single string or a list (any match).
+Exact match, not a pattern.
+
+.TP
+\fBancestor:\fP \fIname\fP | [\fIname1\fP, \fIname2\fP]
+Match if any process in the caller's ancestry (up to 8 levels)
+has this name.
+Accepts a single string or a list.
+Exact match.
+
+.TP
+\fBcommand:\fP \fIpattern\fP
+Glob or regex against the caller's full command line.
+
+.TP
+\fBssh_dest:\fP \fIpattern\fP
+Glob or regex against the SSH destination extracted from the caller's
+command line (\fIuser@host\fP or \fIhost\fP).
+Parsed with awareness of SSH flags, so \fBssh -p 22 user@host\fR
+correctly extracts \fBuser@host\fP\&.
+
+.TP
+\fBremote_dest:\fP \fIpattern\fP
+Glob or regex against the destination hostname resolved from the
+\fBsession-bind@openssh.com\fP extension via \fIknown_hosts\fP reverse lookup.
+Only populated for OpenSSH 8.9+ clients.
+Empty when the host key is not found in known_hosts or when entries
+are hashed.
+
+.TP
+\fBremote_dest_in:\fP \fIknown_hosts\fP
+Special check: matches only if the session-bind destination host key
+was found in known_hosts (i.e., \fBremote_dest\fP is non-empty).
+The only supported value is \fBknown_hosts\fP\&.
+
+.TP
+\fBvia_host:\fP \fIpattern\fP
+Glob or regex against the intermediate host extracted from SSH
+ControlMaster multiplexing.
+Parsed from the mux process command line
+(\fIssh: /path/host_port_user [mux]\fP).
+
+.TP
+\fBforwarded:\fP \fItrue\fP | \fIfalse\fP
+Boolean.
+Whether the agent connection is forwarded (from a remote SSH session)
+as reported by the \fBsession-bind@openssh.com\fP extension.
+
+.TP
+\fBkey:\fP \fIprefix\fP
+Prefix match against the key fingerprint (\fISHA256:...\fP).
+Allows matching specific keys without specifying the full fingerprint.
+
+.TP
+\fBcwd:\fP \fIpattern\fP
+Glob or regex against the caller's working directory.
+
+.TP
+\fBtmux_window:\fP \fIpattern\fP
+Glob or regex against the tmux session:window name (\fImain:claude\fP).
+Resolved from \fBTMUX_PANE\fP in the caller's environment.
+
+.TP
+\fBremote_session:\fP \fItrue\fP | \fIfalse\fP
+Boolean.
+Whether the caller is in a remote SSH session, detected via:
+tmux global environment (\fBSSH_CONNECTION\fP),
+process environment, or sshd in ancestry.
+
+.TP
+\fBcontainer:\fP \fItrue\fP | \fIfalse\fP
+Boolean.
+Whether the caller is in a different PID namespace from the proxy
+(e.g., a container).
+Container callers have incomplete identity — process name, command
+line, and ancestry may be unavailable or refer to wrong processes
+unless the container shares the host PID namespace (\fB--pid=host\fP).
+
+.TP
+\fBenv:\fP \fImap\fP
+Map of environment variable names to expected values.
+All specified variables must match.
+Only variables in the capture list are available:
+\fBSSH_CONNECTION\fP, \fBSSH_TTY\fP, \fBDISPLAY\fP, \fBWAYLAND_DISPLAY\fP,
+\fBTERM\fP, \fBTMUX_PANE\fP, \fBCLAUDECODE\fP\&.
+
+
+.SH EXAMPLES
+.SS Default-deny with explicit allow rules
+.EX
+default_action: deny
+
+path:
+  - ~/bin
+
+rules:
+  # Git operations to known hosts
+  - name: git-hosts
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+
+  # Direct SSH to known hosts
+  - name: direct-known
+    match:
+      remote_dest_in: known_hosts
+    action: allow
+
+  # Forwarded agent to known hosts
+  - name: forwarded-known
+    match:
+      forwarded: true
+      remote_dest_in: known_hosts
+    action: allow
+
+  # Forwarded to unknown hosts
+  - name: forwarded-unknown
+    match:
+      forwarded: true
+    action: deny
+.EE
+
+.SS Confirm for Claude and remote sessions
+.EX
+default_action: allow
+
+rules:
+  - name: claude-confirm
+    match:
+      env:
+        CLAUDECODE: "1"
+    action: confirm
+
+  - name: remote-confirm
+    match:
+      remote_session: true
+    action: confirm
+.EE
+
+.SS Deny all container access
+.EX
+default_action: allow
+
+rules:
+  - name: container-deny
+    match:
+      container: true
+    action: deny
+.EE
+
+.SS Restrict by working directory
+.EX
+default_action: confirm
+
+rules:
+  - name: from-src
+    match:
+      cwd: "/home/alice/src/*"
+      caller: [ssh, git-remote-https, git]
+    action: allow
+.EE
+
+.SS Regex matching
+.EX
+default_action: deny
+
+rules:
+  - name: local-hosts
+    match:
+      command: "~ssh.*\\\\.local"
+    action: allow
+.EE
+
+
+.SH RULE EVALUATION
+.IP "  1." 5
+Rules are evaluated in order; the first match wins.
+.IP "  2." 5
+All fields in a rule's \fBmatch\fP section must match (AND logic).
+.IP "  3." 5
+Omitted fields match anything (wildcard).
+.IP "  4." 5
+An empty \fBmatch\fP section matches all requests.
+.IP "  5." 5
+If no rule matches, the \fBdefault_action\fP applies.
+
+.PP
+Use \fBssh-agent-guard --check\fP to debug rule evaluation.
+It shows which rules matched, which didn't, and why.
+
+
+.SH POLICY RELOAD
+The policy file is monitored for changes via inotify(7) (watching the
+containing directory to handle symlink replacements and atomic renames).
+
+.PP
+On successful reload, the new rules take effect immediately for all
+subsequent signing requests.  Active connections are not interrupted.
+
+.PP
+On failed reload (YAML parse error), the previous policy is retained.
+The error is logged to journald, written to \fIconfig_error.yaml\fP, and
+surfaced in the status bar.
+
+
+.SH MISSING POLICY FILE
+If the policy file does not exist, the proxy defaults to \fBconfirm\fP
+for all requests.  This is a safe default: all signing requires physical
+confirmation.  No error is recorded (the missing file is an expected
+state during initial setup).
+
+
+.SH SEE ALSO
+\fBssh-agent-guard\fP(1), \fByaml\fP(1), \fBglob\fP(7)

@@ -1,0 +1,5 @@
+#!/bin/bash
+# ssh-ag-deny — explicitly deny a pending ssh-agent-guard confirmation
+# Touch this to instantly cancel any pending HMAC touch or remote confirm.
+# Bind to a tmux/sway keybinding for quick access.
+touch "$HOME/.local/state/ssh-ag/confirm/denied"

@@ -1,0 +1,16 @@
+[Unit]
+Description=SSH Agent Guard (policy-enforcing proxy)
+After=gpg-agent-ssh.socket
+
+[Service]
+ExecStart=%h/bin/ssh-agent-guard \
+    --listen %t/ssh-agent-guard.sock \
+    --upstream %t/gnupg/S.gpg-agent.ssh \
+    --state-dir %h/.local/state/ssh-ag \
+    --policy %h/.config/ssh-ag/policy.yaml
+ExecReload=/bin/sh -c 'kill -HUP $MAINPID'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
