@@ -1,10 +1,10 @@
 - **Linux** — uses SO_PEERCRED(7), /proc, and PID namespaces.
   No macOS or BSD support.
 - **OpenSSH 8.9+** — required for `session-bind@openssh.com`, which
-  provides forwarded agent detection, destination host identification,
-  and `ssh_dest` session-bind fallback, `is_in_known_hosts`, and `is_forwarded`
-  policy matching.
-  Without it the guard still works but those fields are always empty.
+  enables forwarded agent detection and the `ssh_dest`,
+  `is_in_known_hosts`, and `is_forwarded` policy fields.
+  Without it the guard still works but cannot identify remote
+  destinations or detect forwarding.
 - **Go 1.24+** — for building from source.
 
 ### Optional dependencies

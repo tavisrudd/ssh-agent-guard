@@ -170,8 +170,9 @@ rules to allow, deny, or require physical confirmation.
 .IP \(bu 2
 \fBForwarded agent abuse\fP — a remote host you SSH into attempts to
 use your forwarded agent to sign for destinations you didn't intend.
-The proxy intercepts \fBsession-bind@openssh.com\fR to detect forwarding
-and can restrict which remote destinations are permitted.
+The proxy intercepts \fBsession-bind@openssh.com\fR (an OpenSSH protocol
+extension that notifies agents when SSH sessions are created) to
+detect forwarding and restrict which remote destinations are permitted.
 .IP \(bu 2
 \fBKey management tampering\fP — a process attempts to add, remove,
 lock, or unlock keys on your agent.  All mutation operations are
@@ -223,8 +224,8 @@ Even without filesystem hardening, the proxy provides substantial value:
 .IP \(bu 2
 \fBPhysical confirmation\fP via YubiKey for sensitive operations
 .IP \(bu 2
-\fBPolicy enforcement\fP for all well-behaved software that respects
-\fBSSH_AUTH_SOCK\fR (ssh, git, rsync, and nearly all SSH clients)
+\fBPolicy enforcement\fP for all software that uses \fBSSH_AUTH_SOCK\fR
+(ssh, git, rsync, and nearly all SSH clients)
 .IP \(bu 2
 \fBMutation blocking\fP (add/remove/lock/unlock always denied)
 
@@ -341,10 +342,10 @@ Hashed entries (\fBHashKnownHosts\fP) are skipped (irreversible by design).
 No macOS or BSD support.
 .IP \(bu 2
 \fBOpenSSH 8.9+\fP — required for \fBsession-bind@openssh.com\fR, which
-provides forwarded agent detection, destination host identification,
-and \fBssh_dest\fR session-bind fallback, \fBis_in_known_hosts\fR, and \fBis_forwarded\fR
-policy matching.
-Without it the guard still works but those fields are always empty.
+enables forwarded agent detection and the \fBssh_dest\fR,
+\fBis_in_known_hosts\fR, and \fBis_forwarded\fR policy fields.
+Without it the guard still works but cannot identify remote
+destinations or detect forwarding.
 .IP \(bu 2
 \fBGo 1.24+\fP — for building from source.
 
@@ -376,8 +377,6 @@ UI and status rendering do.
 
 
 .SH YUBIKEY SETUP
-ssh-agent-guard uses YubiKey HMAC-Challenge slots for physical
-confirmation of signing requests.  Two slots are used:
 .IP \(bu 2
 \fBSlot 2\fP (default) — touch confirmation.  A fixed challenge is sent
 to the YubiKey; the user must physically touch the key to generate a

@@ -1,121 +1,97 @@
 # ssh-agent-guard
 
-> **Beta software.** ssh-agent-guard was recently extracted from a
-> personal dotfiles repository. It works and has a test suite, but it
-> has not had an independent security review and may still contain
-> assumptions about the author's environment. See
-> [SECURITY.md](SECURITY.md) for details. Feedback and contributions
-> welcome.
+> **Beta.** Works and tested, but no independent security review yet.
+> See [SECURITY.md](SECURITY.md) for known limitations.
 
-Policy-enforcing proxy for SSH agent signing operations.
+**Any process running as your user can silently sign with your SSH keys.**
+There's no built-in way to know *what* is signing, *where* it's signing
+to, or to require your consent.
 
-ssh-agent-guard sits between SSH clients and your real SSH agent
-(gpg-agent, ssh-agent, etc.), identifying each connecting process,
-evaluating YAML policy rules, and optionally requiring physical
-YubiKey confirmation — giving you visibility and control over what
-signs with your SSH keys.
+ssh-agent-guard is a proxy that sits between SSH clients and your real
+agent, giving you visibility and control over every signing operation.
+It identifies the connecting process, evaluates YAML policy rules, and
+can optionally require physical YubiKey confirmation — so you know
+exactly what's using your keys. No YubiKey? The proxy still identifies
+callers, enforces policy, and logs everything.
 
-## Why
+### Who should use this
 
-Any process running as your user can talk to your SSH agent and sign
-with your keys. There's no built-in mechanism to know *what* is
-signing, *where* it's signing to, or to require consent for sensitive
-operations.
-
-This matters more now that AI coding tools, untrusted scripts, and
-forwarded agent sessions routinely have access to `SSH_AUTH_SOCK`.
-Without a guard, a compromised process can silently sign for any
-destination using any key your agent holds.
-
-ssh-agent-guard interposes on the agent socket, identifies every
-caller, and lets you write policy rules that allow, deny, or require
-physical confirmation per request.
+- You run **AI coding tools**, downloaded scripts, or other less-trusted
+  software alongside your SSH keys
+- You use **agent forwarding** and want to restrict which remote
+  destinations can sign
+- You want an **audit trail** of every SSH signing operation
 
 ## Features
 
-- **Caller identification** via SO_PEERCRED + /proc (process name,
-  command line, ancestry, cwd, environment, tmux window)
-- **YAML policy engine** with match fields (process_name, parent_process_name, ancestor,
-  ssh_dest, is_forwarded, forwarded_via,
-  is_in_known_hosts, is_in_container, env, cwd, ...)
-- **YubiKey confirmation** — touch (local display) and PIN entry
-  (via tmux popup)
-- **Forwarded agent detection** via session-bind@openssh.com with
-  known_hosts reverse lookup
-- **Structured audit logging** — YAML event files + journald
-- **Status bar integration** — i3status-rs and tmux
-- **Container/PID namespace detection**
-- **Read-only** — all key mutation operations (add, remove, lock,
-  unlock) are unconditionally blocked
+- **Know who's signing** — see the exact process, its parent chain,
+  working directory, and environment for every signing request
+- **Write precise policies** — YAML rules that distinguish AI tools
+  from git, restrict forwarded agents by destination, and match on
+  process name, ancestry, container status, and more
+- **Require physical confirmation** — YubiKey touch for local sessions,
+  PIN entry via tmux popup for remote sessions (optional)
+- **Prevent forwarded agent abuse** — detect when a remote host tries
+  to sign for destinations you didn't intend
+- **Audit everything** — every request logged to YAML files and journald
+  with full caller context
+- **Block key tampering** — add, remove, lock, and unlock operations are
+  unconditionally denied
+- **Monitor in real time** — see signing activity in your i3status-rs
+  or tmux status bar
 
-## Threat model
+### Example policy
 
-ssh-agent-guard is designed to protect SSH signing keys on a Linux
-workstation where the user runs a mix of trusted and less-trusted
-software under the same Unix account.
+```yaml
+rules:
+  # Git hosting — always allow
+  - name: git-hosts
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
 
-### What it protects against
+  # AI coding tools — require YubiKey confirmation
+  - name: ai-tools
+    match:
+      env:
+        CLAUDECODE: "1"
+    action: confirm
 
-- **Unauthorized local signing** — a compromised or untrusted process
-  (AI coding tool, downloaded script, browser exploit) attempts to sign
-  with your SSH key.  The proxy identifies the caller and applies policy
-  rules to allow, deny, or require physical confirmation.
-- **Forwarded agent abuse** — a remote host you SSH into attempts to
-  use your forwarded agent to sign for destinations you didn't intend.
-  The proxy intercepts `session-bind@openssh.com` to detect forwarding
-  and can restrict which remote destinations are permitted.
-- **Key management tampering** — a process attempts to add, remove,
-  lock, or unlock keys on your agent.  All mutation operations are
-  unconditionally blocked.
-- **Silent signing** — without the proxy, any signing operation is
-  invisible.  The proxy logs every sign request with full caller context
-  (process name, command line, ancestry, working directory, environment)
-  to structured YAML files and journald.
+  # Forwarded agent to known hosts — allow
+  - name: forwarded-known
+    match:
+      is_forwarded: true
+      is_in_known_hosts: true
+    action: allow
 
-### What it does NOT protect against
+  # Forwarded agent to unknown hosts — deny
+  - name: forwarded-unknown
+    match:
+      is_forwarded: true
+    action: deny
+```
 
-- **Same-user socket access** (without system hardening) — by default,
-  any process running as your user can connect directly to the upstream
-  agent socket, bypassing the proxy entirely.  See the system setup
-  section for filesystem-level protections that close this gap.
-- **Root compromise** — a root-level attacker can read any socket,
-  ptrace any process, and bypass all user-level controls.
-- **TOCTOU** (time-of-check-time-of-use) — caller identity is gathered
-  at connect(2) time via SO_PEERCRED.  If a process calls exec(2)
-  between connecting and signing, the policy evaluation uses the
-  pre-exec identity.  In practice this is a narrow window (microseconds)
-  and requires a process specifically designed to exploit it.
-- **YubiKey coercion** — if confirmation is required and an attacker has
-  physical access to your YubiKey (or can socially engineer you into
-  touching it), the confirmation can be bypassed.
-- **/proc races** — the proxy reads /proc/$pid/\* after obtaining the PID
-  via SO_PEERCRED.  If the PID is recycled before the reads complete,
-  the proxy may read stale or wrong process information.  PID recycling
-  attacks require precise timing and are impractical on systems with
-  large PID ranges (kernel.pid_max).
-- **Container callers with incomplete identity** — a container process
-  with access to the socket (via bind mount) can connect, but its /proc
-  entries may be invisible or in a different PID namespace.  The proxy
-  detects PID namespace mismatches and marks such callers as
-  `container=true`, but the caller identity fields (name, command,
-  ancestry) may be unavailable.  Policy rules should default to deny or
-  confirm for container callers.
+Rules are evaluated top-to-bottom; first match wins. All fields in a
+match section must match (AND logic). Omitted fields match anything.
+See **ssh-agent-guard-policy(5)** for the full list of match fields.
 
-### Without socket protection
+### How it compares
 
-Even without filesystem hardening, the proxy provides substantial value:
+| | ssh-agent-guard | `ssh-add -c` | ssh-agent-filter |
+|---|---|---|---|
+| Per-operation confirmation | Yes (YubiKey touch/PIN) | Yes (askpass dialog) | No |
+| Caller identification | Full (process, ancestry, env) | None | None |
+| Policy rules | YAML, flexible match fields | None | Key fingerprint only |
+| Audit logging | Structured YAML + journald | None | None |
+| Forwarded agent detection | Yes (session-bind) | No | No |
 
-- **Audit logging** of all signing operations with full caller context
-- **Physical confirmation** via YubiKey for sensitive operations
-- **Policy enforcement** for all well-behaved software that respects
-  `SSH_AUTH_SOCK` (ssh, git, rsync, and nearly all SSH clients)
-- **Mutation blocking** (add/remove/lock/unlock always denied)
+The key differentiator is caller identification — instead of a generic
+"allow this operation?" prompt, you can write rules like "allow git to
+sign for github.com, require confirmation for AI tools, deny
+everything forwarded to unknown hosts."
 
-Most real-world threats (AI coding tools, scripts, forwarded sessions)
-use `SSH_AUTH_SOCK` and will be subject to the proxy's policy.  Direct
-socket access requires deliberately discovering and connecting to the
-upstream path.
-
+See also: [guardian-agent](https://github.com/StanfordSNR/guardian-agent) (per-session prompts, requires patched SSH),
+[sshield](https://github.com/gotlougit/sshield) (sandboxed agent replacement in Rust).
 
 ## Quick start
 
@@ -142,7 +118,7 @@ cp examples/policy.yaml ~/.config/ssh-ag/policy.yaml
 # Edit to taste — the proxy watches for changes via inotify
 ```
 
-### Debug policy matching
+### Verify it's working
 
 ```bash
 # See how the proxy views your current shell
@@ -206,6 +182,76 @@ that use `SSH_AUTH_SOCK`, but does not prevent direct access to the
 upstream socket.
 
 
+## Threat model
+
+ssh-agent-guard is designed to protect SSH signing keys on a Linux
+workstation where the user runs a mix of trusted and less-trusted
+software under the same Unix account.
+
+### What it protects against
+
+- **Unauthorized local signing** — a compromised or untrusted process
+  (AI coding tool, downloaded script, browser exploit) attempts to sign
+  with your SSH key.  The proxy identifies the caller and applies policy
+  rules to allow, deny, or require physical confirmation.
+- **Forwarded agent abuse** — a remote host you SSH into attempts to
+  use your forwarded agent to sign for destinations you didn't intend.
+  The proxy intercepts `session-bind@openssh.com` (an OpenSSH protocol
+  extension that notifies agents when SSH sessions are created) to
+  detect forwarding and restrict which remote destinations are permitted.
+- **Key management tampering** — a process attempts to add, remove,
+  lock, or unlock keys on your agent.  All mutation operations are
+  unconditionally blocked.
+- **Silent signing** — without the proxy, any signing operation is
+  invisible.  The proxy logs every sign request with full caller context
+  (process name, command line, ancestry, working directory, environment)
+  to structured YAML files and journald.
+
+### What it does NOT protect against
+
+- **Same-user socket access** (without system hardening) — by default,
+  any process running as your user can connect directly to the upstream
+  agent socket, bypassing the proxy entirely.  See the system setup
+  section for filesystem-level protections that close this gap.
+- **Root compromise** — a root-level attacker can read any socket,
+  ptrace any process, and bypass all user-level controls.
+- **TOCTOU** (time-of-check-time-of-use) — caller identity is gathered
+  at connect(2) time via SO_PEERCRED.  If a process calls exec(2)
+  between connecting and signing, the policy evaluation uses the
+  pre-exec identity.  In practice this is a narrow window (microseconds)
+  and requires a process specifically designed to exploit it.
+- **YubiKey coercion** — if confirmation is required and an attacker has
+  physical access to your YubiKey (or can socially engineer you into
+  touching it), the confirmation can be bypassed.
+- **/proc races** — the proxy reads /proc/$pid/\* after obtaining the PID
+  via SO_PEERCRED.  If the PID is recycled before the reads complete,
+  the proxy may read stale or wrong process information.  PID recycling
+  attacks require precise timing and are impractical on systems with
+  large PID ranges (kernel.pid_max).
+- **Container callers with incomplete identity** — a container process
+  with access to the socket (via bind mount) can connect, but its /proc
+  entries may be invisible or in a different PID namespace.  The proxy
+  detects PID namespace mismatches and marks such callers as
+  `container=true`, but the caller identity fields (name, command,
+  ancestry) may be unavailable.  Policy rules should default to deny or
+  confirm for container callers.
+
+### Without socket protection
+
+Even without filesystem hardening, the proxy provides substantial value:
+
+- **Audit logging** of all signing operations with full caller context
+- **Physical confirmation** via YubiKey for sensitive operations
+- **Policy enforcement** for all software that uses `SSH_AUTH_SOCK`
+  (ssh, git, rsync, and nearly all SSH clients)
+- **Mutation blocking** (add/remove/lock/unlock always denied)
+
+Most real-world threats (AI coding tools, scripts, forwarded sessions)
+use `SSH_AUTH_SOCK` and will be subject to the proxy's policy.  Direct
+socket access requires deliberately discovering and connecting to the
+upstream path.
+
+
 ## Install
 
 ```bash
@@ -234,10 +280,10 @@ systemctl --user enable --now ssh-agent-guard
 - **Linux** — uses SO_PEERCRED(7), /proc, and PID namespaces.
   No macOS or BSD support.
 - **OpenSSH 8.9+** — required for `session-bind@openssh.com`, which
-  provides forwarded agent detection, destination host identification,
-  and `ssh_dest` session-bind fallback, `is_in_known_hosts`, and `is_forwarded`
-  policy matching.
-  Without it the guard still works but those fields are always empty.
+  enables forwarded agent detection and the `ssh_dest`,
+  `is_in_known_hosts`, and `is_forwarded` policy fields.
+  Without it the guard still works but cannot identify remote
+  destinations or detect forwarding.
 - **Go 1.24+** — for building from source.
 
 ### Optional dependencies
@@ -264,8 +310,12 @@ UI and status rendering do.
 
 ## YubiKey setup
 
-ssh-agent-guard uses YubiKey HMAC-Challenge slots for physical
-confirmation of signing requests.  Two slots are used:
+**A YubiKey is optional.** Without one, the proxy still identifies
+callers, enforces policy, and logs everything. Rules with
+`action: confirm` degrade to `deny` when no YubiKey is available.
+
+If you have a YubiKey, the guard uses HMAC-Challenge (a
+challenge-response protocol over USB) with two slots:
 
 - **Slot 2** (default) — touch confirmation.  A fixed challenge is sent
   to the YubiKey; the user must physically touch the key to generate a
@@ -333,30 +383,17 @@ file's `confirm:` section.  See ssh-agent-guard-policy(5).
 
 ## Documentation
 
-Full documentation is also available as man pages:
+Full documentation is available as man pages:
 
 - **ssh-agent-guard(1)** — daemon operation, options, caller
-  identification, all sections above plus environment variables
-  and file paths
-- **ssh-agent-guard-policy(5)** — policy file format, match fields,
-  examples, rule evaluation
+  identification, environment variables, file paths
+- **ssh-agent-guard-policy(5)** — policy file format, all match fields,
+  examples, rule evaluation order
 
 ```bash
-man ./ssh-agent-guard.1
-man ./ssh-agent-guard-policy.5
+man ssh-agent-guard
+man ssh-agent-guard-policy
 ```
-
-## Prior art
-
-- [ssh-agent-filter](https://github.com/tiwe-de/ssh-agent-filter) —
-  filtering proxy for ssh-agent, restricts by key fingerprint (C++)
-- [guardian-agent](https://github.com/StanfordSNR/guardian-agent) —
-  secure agent forwarding with per-session prompts (requires patched
-  SSH client)
-- [sshield](https://github.com/gotlougit/sshield) — sandboxed SSH
-  agent replacement written in Rust
-- OpenSSH `ssh-add -c` — built-in per-operation confirmation (no
-  policy, no caller context, generic askpass dialog)
 
 ## Contributing
 

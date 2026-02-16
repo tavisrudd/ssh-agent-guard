@@ -1,57 +1,98 @@
 changequote([[[,]]])dnl
 # ssh-agent-guard
 
-> **Beta software.** ssh-agent-guard was recently extracted from a
-> personal dotfiles repository. It works and has a test suite, but it
-> has not had an independent security review and may still contain
-> assumptions about the author's environment. See
-> [SECURITY.md](SECURITY.md) for details. Feedback and contributions
-> welcome.
+> **Beta.** Works and tested, but no independent security review yet.
+> See [SECURITY.md](SECURITY.md) for known limitations.
 
-Policy-enforcing proxy for SSH agent signing operations.
+**Any process running as your user can silently sign with your SSH keys.**
+There's no built-in way to know *what* is signing, *where* it's signing
+to, or to require your consent.
 
-ssh-agent-guard sits between SSH clients and your real SSH agent
-(gpg-agent, ssh-agent, etc.), identifying each connecting process,
-evaluating YAML policy rules, and optionally requiring physical
-YubiKey confirmation — giving you visibility and control over what
-signs with your SSH keys.
+ssh-agent-guard is a proxy that sits between SSH clients and your real
+agent, giving you visibility and control over every signing operation.
+It identifies the connecting process, evaluates YAML policy rules, and
+can optionally require physical YubiKey confirmation — so you know
+exactly what's using your keys. No YubiKey? The proxy still identifies
+callers, enforces policy, and logs everything.
 
-## Why
+### Who should use this
 
-Any process running as your user can talk to your SSH agent and sign
-with your keys. There's no built-in mechanism to know *what* is
-signing, *where* it's signing to, or to require consent for sensitive
-operations.
-
-This matters more now that AI coding tools, untrusted scripts, and
-forwarded agent sessions routinely have access to `SSH_AUTH_SOCK`.
-Without a guard, a compromised process can silently sign for any
-destination using any key your agent holds.
-
-ssh-agent-guard interposes on the agent socket, identifies every
-caller, and lets you write policy rules that allow, deny, or require
-physical confirmation per request.
+- You run **AI coding tools**, downloaded scripts, or other less-trusted
+  software alongside your SSH keys
+- You use **agent forwarding** and want to restrict which remote
+  destinations can sign
+- You want an **audit trail** of every SSH signing operation
 
 ## Features
 
-- **Caller identification** via SO_PEERCRED + /proc (process name,
-  command line, ancestry, cwd, environment, tmux window)
-- **YAML policy engine** with match fields (process_name, parent_process_name, ancestor,
-  ssh_dest, is_forwarded, forwarded_via,
-  is_in_known_hosts, is_in_container, env, cwd, ...)
-- **YubiKey confirmation** — touch (local display) and PIN entry
-  (via tmux popup)
-- **Forwarded agent detection** via session-bind@openssh.com with
-  known_hosts reverse lookup
-- **Structured audit logging** — YAML event files + journald
-- **Status bar integration** — i3status-rs and tmux
-- **Container/PID namespace detection**
-- **Read-only** — all key mutation operations (add, remove, lock,
-  unlock) are unconditionally blocked
+- **Know who's signing** — see the exact process, its parent chain,
+  working directory, and environment for every signing request
+- **Write precise policies** — YAML rules that distinguish AI tools
+  from git, restrict forwarded agents by destination, and match on
+  process name, ancestry, container status, and more
+- **Require physical confirmation** — YubiKey touch for local sessions,
+  PIN entry via tmux popup for remote sessions (optional)
+- **Prevent forwarded agent abuse** — detect when a remote host tries
+  to sign for destinations you didn't intend
+- **Audit everything** — every request logged to YAML files and journald
+  with full caller context
+- **Block key tampering** — add, remove, lock, and unlock operations are
+  unconditionally denied
+- **Monitor in real time** — see signing activity in your i3status-rs
+  or tmux status bar
 
-## Threat model
+### Example policy
 
-include([[[docs/threat-model.md]]])
+```yaml
+rules:
+  # Git hosting — always allow
+  - name: git-hosts
+    match:
+      ssh_dest: "git@github.com"
+    action: allow
+
+  # AI coding tools — require YubiKey confirmation
+  - name: ai-tools
+    match:
+      env:
+        CLAUDECODE: "1"
+    action: confirm
+
+  # Forwarded agent to known hosts — allow
+  - name: forwarded-known
+    match:
+      is_forwarded: true
+      is_in_known_hosts: true
+    action: allow
+
+  # Forwarded agent to unknown hosts — deny
+  - name: forwarded-unknown
+    match:
+      is_forwarded: true
+    action: deny
+```
+
+Rules are evaluated top-to-bottom; first match wins. All fields in a
+match section must match (AND logic). Omitted fields match anything.
+See **ssh-agent-guard-policy(5)** for the full list of match fields.
+
+### How it compares
+
+| | ssh-agent-guard | `ssh-add -c` | ssh-agent-filter |
+|---|---|---|---|
+| Per-operation confirmation | Yes (YubiKey touch/PIN) | Yes (askpass dialog) | No |
+| Caller identification | Full (process, ancestry, env) | None | None |
+| Policy rules | YAML, flexible match fields | None | Key fingerprint only |
+| Audit logging | Structured YAML + journald | None | None |
+| Forwarded agent detection | Yes (session-bind) | No | No |
+
+The key differentiator is caller identification — instead of a generic
+"allow this operation?" prompt, you can write rules like "allow git to
+sign for github.com, require confirmation for AI tools, deny
+everything forwarded to unknown hosts."
+
+See also: [guardian-agent](https://github.com/StanfordSNR/guardian-agent) (per-session prompts, requires patched SSH),
+[sshield](https://github.com/gotlougit/sshield) (sandboxed agent replacement in Rust).
 
 ## Quick start
 
@@ -78,7 +119,7 @@ cp examples/policy.yaml ~/.config/ssh-ag/policy.yaml
 # Edit to taste — the proxy watches for changes via inotify
 ```
 
-### Debug policy matching
+### Verify it's working
 
 ```bash
 # See how the proxy views your current shell
@@ -91,6 +132,10 @@ cp examples/policy.yaml ~/.config/ssh-ag/policy.yaml
 ## System setup
 
 include([[[docs/system-setup.md]]])
+
+## Threat model
+
+include([[[docs/threat-model.md]]])
 
 ## Install
 
@@ -121,34 +166,28 @@ include([[[docs/requirements.md]]])
 
 ## YubiKey setup
 
+**A YubiKey is optional.** Without one, the proxy still identifies
+callers, enforces policy, and logs everything. Rules with
+`action: confirm` degrade to `deny` when no YubiKey is available.
+
+If you have a YubiKey, the guard uses HMAC-Challenge (a
+challenge-response protocol over USB) with two slots:
+
 include([[[docs/yubikey-setup.md]]])
 
 ## Documentation
 
-Full documentation is also available as man pages:
+Full documentation is available as man pages:
 
 - **ssh-agent-guard(1)** — daemon operation, options, caller
-  identification, all sections above plus environment variables
-  and file paths
-- **ssh-agent-guard-policy(5)** — policy file format, match fields,
-  examples, rule evaluation
+  identification, environment variables, file paths
+- **ssh-agent-guard-policy(5)** — policy file format, all match fields,
+  examples, rule evaluation order
 
 ```bash
-man ./ssh-agent-guard.1
-man ./ssh-agent-guard-policy.5
+man ssh-agent-guard
+man ssh-agent-guard-policy
 ```
-
-## Prior art
-
-- [ssh-agent-filter](https://github.com/tiwe-de/ssh-agent-filter) —
-  filtering proxy for ssh-agent, restricts by key fingerprint (C++)
-- [guardian-agent](https://github.com/StanfordSNR/guardian-agent) —
-  secure agent forwarding with per-session prompts (requires patched
-  SSH client)
-- [sshield](https://github.com/gotlougit/sshield) — sandboxed SSH
-  agent replacement written in Rust
-- OpenSSH `ssh-add -c` — built-in per-operation confirmation (no
-  policy, no caller context, generic askpass dialog)
 
 ## Contributing
 

@@ -10,8 +10,9 @@ software under the same Unix account.
   rules to allow, deny, or require physical confirmation.
 - **Forwarded agent abuse** — a remote host you SSH into attempts to
   use your forwarded agent to sign for destinations you didn't intend.
-  The proxy intercepts `session-bind@openssh.com` to detect forwarding
-  and can restrict which remote destinations are permitted.
+  The proxy intercepts `session-bind@openssh.com` (an OpenSSH protocol
+  extension that notifies agents when SSH sessions are created) to
+  detect forwarding and restrict which remote destinations are permitted.
 - **Key management tampering** — a process attempts to add, remove,
   lock, or unlock keys on your agent.  All mutation operations are
   unconditionally blocked.
@@ -55,8 +56,8 @@ Even without filesystem hardening, the proxy provides substantial value:
 
 - **Audit logging** of all signing operations with full caller context
 - **Physical confirmation** via YubiKey for sensitive operations
-- **Policy enforcement** for all well-behaved software that respects
-  `SSH_AUTH_SOCK` (ssh, git, rsync, and nearly all SSH clients)
+- **Policy enforcement** for all software that uses `SSH_AUTH_SOCK`
+  (ssh, git, rsync, and nearly all SSH clients)
 - **Mutation blocking** (add/remove/lock/unlock always denied)
 
 Most real-world threats (AI coding tools, scripts, forwarded sessions)

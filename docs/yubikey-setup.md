@@ -1,6 +1,3 @@
-ssh-agent-guard uses YubiKey HMAC-Challenge slots for physical
-confirmation of signing requests.  Two slots are used:
-
 - **Slot 2** (default) — touch confirmation.  A fixed challenge is sent
   to the YubiKey; the user must physically touch the key to generate a
   response.  Used when a local display is active.
