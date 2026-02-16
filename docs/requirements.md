@@ -1,5 +1,8 @@
-- **Linux** — uses SO_PEERCRED(7), /proc, and PID namespaces.
-  No macOS or BSD support.
+- **Linux only** — uses `SO_PEERCRED(7)` for kernel-verified caller
+  identification and `/proc` for process context (command line, ancestry,
+  environment, PID namespaces).  No macOS or BSD equivalent exists for
+  these interfaces.  On macOS, `ssh-add -c` provides basic per-operation
+  confirmation without caller identification.
 - **OpenSSH 8.9+** — required for `session-bind@openssh.com`, which
   enables forwarded agent detection and the `ssh_dest`,
   `is_in_known_hosts`, and `is_forwarded` policy fields.
@@ -27,3 +30,9 @@
 The core proxy (policy evaluation, caller identification, logging)
 has no compositor or multiplexer dependencies — only the confirmation
 UI and status rendering do.
+
+### Performance
+
+The proxy adds negligible latency (~1ms per operation).  The main
+cost is `/proc` reads for caller identification, which are
+memory-backed and fast on any modern kernel.

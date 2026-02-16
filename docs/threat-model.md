@@ -1,23 +1,27 @@
-ssh-agent-guard is designed to protect SSH signing keys on a Linux
-workstation where the user runs a mix of trusted and less-trusted
-software under the same Unix account.
+ssh-agent-guard is designed to control who can use your SSH keys on a
+Linux workstation where you run a mix of trusted and less-trusted
+software under the same Unix account.  Hardware keys (YubiKey, Secure
+Enclave) prevent key extraction, but any process that can reach the
+agent socket can still use your keys to open connections and
+authenticate as you — ssh-agent-guard closes that gap.
 
 ### What it protects against
 
-- **Unauthorized local signing** — a compromised or untrusted process
-  (AI coding tool, downloaded script, browser exploit) attempts to sign
-  with your SSH key.  The proxy identifies the caller and applies policy
-  rules to allow, deny, or require physical confirmation.
-- **Forwarded agent abuse** — a remote host you SSH into attempts to
-  use your forwarded agent to sign for destinations you didn't intend.
+- **Unauthorized key use** — a compromised or untrusted process
+  (AI coding tool, downloaded script, browser exploit) uses your SSH
+  keys to open connections or authenticate.  The proxy identifies the
+  caller and applies policy rules to allow, deny, or require physical
+  confirmation.
+- **Forwarded agent abuse** — a remote host you SSH into uses your
+  forwarded agent to connect to destinations you didn't intend.
   The proxy intercepts `session-bind@openssh.com` (an OpenSSH protocol
   extension that notifies agents when SSH sessions are created) to
   detect forwarding and restrict which remote destinations are permitted.
 - **Key management tampering** — a process attempts to add, remove,
   lock, or unlock keys on your agent.  All mutation operations are
   unconditionally blocked.
-- **Silent signing** — without the proxy, any signing operation is
-  invisible.  The proxy logs every sign request with full caller context
+- **Silent key use** — without the proxy, any key operation is
+  invisible.  The proxy logs every request with full caller context
   (process name, command line, ancestry, working directory, environment)
   to structured YAML files and journald.
 

@@ -157,19 +157,23 @@ Detected via the \fBsession-bind@openssh.com\fP agent protocol extension
 
 
 .SH THREAT MODEL
-ssh-agent-guard is designed to protect SSH signing keys on a Linux
-workstation where the user runs a mix of trusted and less-trusted
-software under the same Unix account.
+ssh-agent-guard is designed to control who can use your SSH keys on a
+Linux workstation where you run a mix of trusted and less-trusted
+software under the same Unix account.  Hardware keys (YubiKey, Secure
+Enclave) prevent key extraction, but any process that can reach the
+agent socket can still use your keys to open connections and
+authenticate as you — ssh-agent-guard closes that gap.
 
 .SS What it protects against
 .IP \(bu 2
-\fBUnauthorized local signing\fP — a compromised or untrusted process
-(AI coding tool, downloaded script, browser exploit) attempts to sign
-with your SSH key.  The proxy identifies the caller and applies policy
-rules to allow, deny, or require physical confirmation.
+\fBUnauthorized key use\fP — a compromised or untrusted process
+(AI coding tool, downloaded script, browser exploit) uses your SSH
+keys to open connections or authenticate.  The proxy identifies the
+caller and applies policy rules to allow, deny, or require physical
+confirmation.
 .IP \(bu 2
-\fBForwarded agent abuse\fP — a remote host you SSH into attempts to
-use your forwarded agent to sign for destinations you didn't intend.
+\fBForwarded agent abuse\fP — a remote host you SSH into uses your
+forwarded agent to connect to destinations you didn't intend.
 The proxy intercepts \fBsession-bind@openssh.com\fR (an OpenSSH protocol
 extension that notifies agents when SSH sessions are created) to
 detect forwarding and restrict which remote destinations are permitted.
@@ -178,8 +182,8 @@ detect forwarding and restrict which remote destinations are permitted.
 lock, or unlock keys on your agent.  All mutation operations are
 unconditionally blocked.
 .IP \(bu 2
-\fBSilent signing\fP — without the proxy, any signing operation is
-invisible.  The proxy logs every sign request with full caller context
+\fBSilent key use\fP — without the proxy, any key operation is
+invisible.  The proxy logs every request with full caller context
 (process name, command line, ancestry, working directory, environment)
 to structured YAML files and journald.
 
@@ -338,8 +342,11 @@ Hashed entries (\fBHashKnownHosts\fP) are skipped (irreversible by design).
 
 .SH REQUIREMENTS
 .IP \(bu 2
-\fBLinux\fP — uses SO_PEERCRED(7), /proc, and PID namespaces.
-No macOS or BSD support.
+\fBLinux only\fP — uses \fBSO_PEERCRED(7)\fR for kernel-verified caller
+identification and \fB/proc\fR for process context (command line, ancestry,
+environment, PID namespaces).  No macOS or BSD equivalent exists for
+these interfaces.  On macOS, \fBssh-add -c\fR provides basic per-operation
+confirmation without caller identification.
 .IP \(bu 2
 \fBOpenSSH 8.9+\fP — required for \fBsession-bind@openssh.com\fR, which
 enables forwarded agent detection and the \fBssh_dest\fR,
@@ -374,6 +381,11 @@ different renderer.
 The core proxy (policy evaluation, caller identification, logging)
 has no compositor or multiplexer dependencies — only the confirmation
 UI and status rendering do.
+
+.SS Performance
+The proxy adds negligible latency (~1ms per operation).  The main
+cost is \fB/proc\fR reads for caller identification, which are
+memory-backed and fast on any modern kernel.
 
 
 .SH YUBIKEY SETUP
