@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
@@ -130,24 +131,36 @@ func (s *StringOrList) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // Policy holds the loaded policy and provides thread-safe evaluation.
+// A Policy always represents a valid, successfully parsed config (or defaults).
+// Transient load errors flow through LoadResult, not Policy state.
 type Policy struct {
 	mu            sync.RWMutex
 	config        *PolicyConfig
 	defaultAction Action
 	rules         []compiledRule
 	path          string
-	activeVersion time.Time // mtime of successfully loaded config
-	loadErrors    []string  // errors from most recent failed load attempt
-	errorFile     string    // path to config_error.yaml (written on error, removed on success)
-	onReload      func()    // called after Load() from Watch/SIGHUP (not initial load)
+	activeVersion time.Time        // mtime of successfully loaded config
+	configSHA256  string           // hex SHA256 of active config file contents
+	configContent string           // raw content of active config file (for snapshot logs)
+	onReload      func(LoadResult) // called after Load() from Watch/SIGHUP (not initial load)
+}
+
+// LoadResult carries the outcome of a Load() call. On success, the Policy
+// is updated and BadContent/BadConfigSHA are empty. On failure, the Policy
+// keeps its previous valid state and the bad file data is here for logging.
+type LoadResult struct {
+	OK           bool     // true if config parsed successfully (or file absent)
+	Errors       []string // parse/read errors (empty on success)
+	BadConfigSHA string   // SHA256 of file that failed to parse (empty on success/read-error)
+	BadContent   string   // raw content of file that failed to parse
 }
 
 // ConfigStatus is the config version/health info included in current.yaml
 // so that status renderers can surface reload failures.
 type ConfigStatus struct {
-	ActiveVersion        string   `yaml:"active_version"`
-	IsCurrentVersion     bool     `yaml:"is_current_version"`
-	CurrentVersionErrors []string `yaml:"current_version_errors,omitempty"`
+	ActiveVersion    string `yaml:"active_version"`
+	ConfigSHA256     string `yaml:"config_sha256,omitempty"`
+	IsCurrentVersion bool   `yaml:"is_current_version"`
 }
 
 // ConfigStatus returns a snapshot of the config version and health state.
@@ -161,28 +174,39 @@ func (p *Policy) ConfigStatus() ConfigStatus {
 		version = p.activeVersion.Format("2006-01-02T15:04:05")
 	}
 
-	isCurrent := len(p.loadErrors) == 0
-	if isCurrent {
-		// Check whether the file on disk matches what we loaded
-		if info, err := os.Stat(p.path); err == nil {
-			if p.activeVersion.IsZero() {
-				// File appeared on disk but we never loaded one
-				isCurrent = false
-			} else {
-				isCurrent = info.ModTime().Equal(p.activeVersion)
-			}
-		} else if !os.IsNotExist(err) {
-			// Stat error (permissions, etc.) — can't verify
+	isCurrent := true
+	if info, err := os.Stat(p.path); err == nil {
+		if p.activeVersion.IsZero() {
+			// File appeared on disk but we never loaded one
 			isCurrent = false
+		} else {
+			isCurrent = info.ModTime().Equal(p.activeVersion)
 		}
-		// File doesn't exist + no load errors → expected "no config" state → current
+	} else if !os.IsNotExist(err) {
+		// Stat error (permissions, etc.) — can't verify
+		isCurrent = false
 	}
+	// File doesn't exist + no active version → expected "no config" state → current
 
 	return ConfigStatus{
-		ActiveVersion:        version,
-		IsCurrentVersion:     isCurrent,
-		CurrentVersionErrors: p.loadErrors,
+		ActiveVersion:    version,
+		ConfigSHA256:     p.configSHA256,
+		IsCurrentVersion: isCurrent,
 	}
+}
+
+// ConfigSHA256 returns the hex SHA256 of the active config file contents.
+func (p *Policy) ConfigSHA256() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.configSHA256
+}
+
+// ConfigContent returns the raw content of the active config file.
+func (p *Policy) ConfigContent() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.configContent
 }
 
 type compiledRule struct {
@@ -279,33 +303,16 @@ func deepGlob(pattern, value string) bool {
 	return len(value) == 0
 }
 
-func NewPolicy(path string, errorFile string) *Policy {
-	p := &Policy{path: path, errorFile: errorFile}
-	p.Load()
-	return p
+func NewPolicy(path string) (*Policy, LoadResult) {
+	p := &Policy{path: path}
+	result := p.Load()
+	return p, result
 }
 
 // OnReload sets a callback invoked after Load() from Watch/SIGHUP.
 // Must be set before calling Watch().
-func (p *Policy) OnReload(fn func()) {
+func (p *Policy) OnReload(fn func(LoadResult)) {
 	p.onReload = fn
-}
-
-// syncErrorFile writes or removes the config error file based on current state.
-// Must hold p.mu.
-func (p *Policy) syncErrorFile() {
-	if p.errorFile == "" {
-		return
-	}
-	if len(p.loadErrors) > 0 {
-		content := fmt.Sprintf("errors:\n")
-		for _, e := range p.loadErrors {
-			content += fmt.Sprintf("  - %q\n", e)
-		}
-		os.WriteFile(p.errorFile, []byte(content), 0644)
-	} else {
-		os.Remove(p.errorFile)
-	}
 }
 
 // Watch uses inotify to watch the policy file for changes and reloads
@@ -338,9 +345,9 @@ func (p *Policy) Watch() {
 					continue
 				}
 				if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
-					p.Load()
+					result := p.Load()
 					if p.onReload != nil {
-						p.onReload()
+						p.onReload(result)
 					}
 				}
 			case err, ok := <-watcher.Errors:
@@ -353,10 +360,9 @@ func (p *Policy) Watch() {
 	}()
 }
 
-func (p *Policy) Load() {
+func (p *Policy) Load() LoadResult {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	defer p.syncErrorFile()
 
 	config := &PolicyConfig{DefaultAction: "allow"}
 
@@ -364,23 +370,31 @@ func (p *Policy) Load() {
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Printf("policy: no config at %s, defaulting to confirm-all", p.path)
-			p.loadErrors = nil
-			p.activeVersion = time.Time{}
 		} else {
 			log.Printf("policy: read %s: %v", p.path, err)
-			p.loadErrors = []string{err.Error()}
 		}
 		p.config = config
 		p.defaultAction = Confirm
 		p.rules = nil
+		p.activeVersion = time.Time{}
+		p.configSHA256 = ""
+		p.configContent = ""
 		resolveBins()
-		return
+		if os.IsNotExist(err) {
+			return LoadResult{OK: true}
+		}
+		return LoadResult{OK: false, Errors: []string{err.Error()}}
 	}
 
 	if err := yaml.Unmarshal(data, config); err != nil {
 		log.Printf("policy: parse %s: %v (keeping previous)", p.path, err)
-		p.loadErrors = []string{err.Error()}
-		return
+		badHash := sha256.Sum256(data)
+		return LoadResult{
+			OK:           false,
+			Errors:       []string{err.Error()},
+			BadConfigSHA: fmt.Sprintf("%x", badHash),
+			BadContent:   string(data),
+		}
 	}
 
 	defaultAction, err := parseAction(config.DefaultAction)
@@ -410,7 +424,9 @@ func (p *Policy) Load() {
 	p.config = config
 	p.defaultAction = defaultAction
 	p.rules = rules
-	p.loadErrors = nil
+	hash := sha256.Sum256(data)
+	p.configSHA256 = fmt.Sprintf("%x", hash)
+	p.configContent = string(data)
 	if info, err := os.Stat(p.path); err == nil {
 		p.activeVersion = info.ModTime()
 	}
@@ -430,6 +446,8 @@ func (p *Policy) Load() {
 	if verbose {
 		log.Printf("policy: loaded %d rules from %s (default: %s)", len(rules), p.path, defaultAction)
 	}
+
+	return LoadResult{OK: true}
 }
 
 // ConfirmConfig returns a ConfirmConfig built from the current policy's

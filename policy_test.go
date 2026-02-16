@@ -10,6 +10,12 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+// newTestPolicyFromFile creates a Policy from a file, discarding the LoadResult.
+func newTestPolicyFromFile(path string) *Policy {
+	p, _ := NewPolicy(path)
+	return p
+}
+
 func TestParseAction(t *testing.T) {
 	tests := []struct {
 		input   string
@@ -631,7 +637,7 @@ rules:
 				t.Fatal(err)
 			}
 
-			policy := NewPolicy(policyFile, "")
+			policy := newTestPolicyFromFile(policyFile)
 			result := policy.Evaluate(tt.caller, tt.session, tt.keyFP)
 
 			if result.Action != tt.wantAction {
@@ -645,7 +651,7 @@ rules:
 }
 
 func TestPolicyLoadMissingFile(t *testing.T) {
-	policy := NewPolicy("/nonexistent/policy.yaml", "")
+	policy, _ := NewPolicy("/nonexistent/policy.yaml")
 	result := policy.Evaluate(
 		&CallerContext{Name: "ssh", Env: map[string]string{}},
 		nil, "",
@@ -662,9 +668,6 @@ func TestPolicyLoadMissingFile(t *testing.T) {
 	if cs.ActiveVersion != "" {
 		t.Errorf("missing file should have empty active_version, got %q", cs.ActiveVersion)
 	}
-	if len(cs.CurrentVersionErrors) != 0 {
-		t.Errorf("missing file should have no errors, got %v", cs.CurrentVersionErrors)
-	}
 }
 
 func TestPolicyLoadInvalidYAML(t *testing.T) {
@@ -674,7 +677,7 @@ func TestPolicyLoadInvalidYAML(t *testing.T) {
 	// Write valid policy first
 	valid := "default_action: deny\nrules: []\n"
 	os.WriteFile(policyFile, []byte(valid), 0644)
-	policy := NewPolicy(policyFile, "")
+	policy := newTestPolicyFromFile(policyFile)
 
 	// Verify deny is loaded
 	result := policy.Evaluate(
@@ -685,7 +688,7 @@ func TestPolicyLoadInvalidYAML(t *testing.T) {
 		t.Fatal("expected deny after valid load")
 	}
 
-	// After successful load: should be current, have a version, no errors
+	// After successful load: should be current, have a version
 	cs := policy.ConfigStatus()
 	if !cs.IsCurrentVersion {
 		t.Error("should be current after successful load")
@@ -693,13 +696,25 @@ func TestPolicyLoadInvalidYAML(t *testing.T) {
 	if cs.ActiveVersion == "" {
 		t.Error("should have active_version after successful load")
 	}
-	if len(cs.CurrentVersionErrors) != 0 {
-		t.Errorf("should have no errors after successful load, got %v", cs.CurrentVersionErrors)
-	}
 
 	// Overwrite with invalid YAML — should keep previous config
+	// Sleep to ensure mtime differs (ConfigStatus uses mtime to detect staleness)
+	time.Sleep(10 * time.Millisecond)
 	os.WriteFile(policyFile, []byte("{{{{invalid"), 0644)
-	policy.Load()
+	loadResult := policy.Load()
+
+	if loadResult.OK {
+		t.Error("load of invalid YAML should return OK=false")
+	}
+	if len(loadResult.Errors) == 0 {
+		t.Error("load of invalid YAML should return errors")
+	}
+	if loadResult.BadConfigSHA == "" {
+		t.Error("load of invalid YAML should return bad config SHA")
+	}
+	if loadResult.BadContent != "{{{{invalid" {
+		t.Errorf("load of invalid YAML should return bad content, got %q", loadResult.BadContent)
+	}
 
 	result = policy.Evaluate(
 		&CallerContext{Name: "ssh", Env: map[string]string{}},
@@ -709,25 +724,23 @@ func TestPolicyLoadInvalidYAML(t *testing.T) {
 		t.Errorf("invalid YAML reload should keep previous config, got %v", result.Action)
 	}
 
-	// After failed reload: not current, has errors, keeps old version
+	// After failed reload: not current (mtime changed), keeps old version
 	cs = policy.ConfigStatus()
 	if cs.IsCurrentVersion {
 		t.Error("should NOT be current after failed reload")
 	}
-	if len(cs.CurrentVersionErrors) == 0 {
-		t.Error("should have errors after failed reload")
-	}
 
-	// Fix the YAML — should clear errors and update version
+	// Fix the YAML — should update version
 	os.WriteFile(policyFile, []byte("default_action: allow\nrules: []\n"), 0644)
-	policy.Load()
+	loadResult = policy.Load()
+
+	if !loadResult.OK {
+		t.Error("load of valid YAML should return OK=true")
+	}
 
 	cs = policy.ConfigStatus()
 	if !cs.IsCurrentVersion {
 		t.Error("should be current after successful reload")
-	}
-	if len(cs.CurrentVersionErrors) != 0 {
-		t.Errorf("should have no errors after successful reload, got %v", cs.CurrentVersionErrors)
 	}
 }
 
@@ -736,7 +749,7 @@ func TestPolicyConfigStatusStaleOnDiskChange(t *testing.T) {
 	policyFile := filepath.Join(dir, "policy.yaml")
 
 	os.WriteFile(policyFile, []byte("default_action: deny\nrules: []\n"), 0644)
-	policy := NewPolicy(policyFile, "")
+	policy := newTestPolicyFromFile(policyFile)
 
 	// Immediately after load, should be current
 	cs := policy.ConfigStatus()
@@ -753,33 +766,32 @@ func TestPolicyConfigStatusStaleOnDiskChange(t *testing.T) {
 	if cs.IsCurrentVersion {
 		t.Error("should NOT be current after file changed on disk without reload")
 	}
-	if len(cs.CurrentVersionErrors) != 0 {
-		t.Error("stale-but-valid should have no errors (the new file hasn't been parsed yet)")
-	}
 
 	// Reload picks up the new version
-	policy.Load()
+	_ = policy.Load()
 	cs = policy.ConfigStatus()
 	if !cs.IsCurrentVersion {
 		t.Error("should be current after reload")
 	}
 }
 
-func TestPolicyErrorFile(t *testing.T) {
+func TestSyncErrorFile(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
 	errorFile := filepath.Join(dir, "config_error.yaml")
 
 	// Valid config — no error file
 	os.WriteFile(policyFile, []byte("default_action: deny\nrules: []\n"), 0644)
-	policy := NewPolicy(policyFile, errorFile)
+	policy, result := NewPolicy(policyFile)
+	syncErrorFile(errorFile, result)
 	if _, err := os.Stat(errorFile); !os.IsNotExist(err) {
 		t.Error("error file should not exist after valid load")
 	}
 
 	// Break the config — error file should appear
 	os.WriteFile(policyFile, []byte("{{broken"), 0644)
-	policy.Load()
+	result = policy.Load()
+	syncErrorFile(errorFile, result)
 	data, err := os.ReadFile(errorFile)
 	if err != nil {
 		t.Fatal("error file should exist after failed load")
@@ -790,7 +802,8 @@ func TestPolicyErrorFile(t *testing.T) {
 
 	// Fix the config — error file should be removed
 	os.WriteFile(policyFile, []byte("default_action: allow\nrules: []\n"), 0644)
-	policy.Load()
+	result = policy.Load()
+	syncErrorFile(errorFile, result)
 	if _, err := os.Stat(errorFile); !os.IsNotExist(err) {
 		t.Error("error file should be removed after successful reload")
 	}
@@ -812,7 +825,7 @@ rules:
     action: confirm
 `
 	os.WriteFile(policyFile, []byte(yaml), 0644)
-	policy := NewPolicy(policyFile, "")
+	policy := newTestPolicyFromFile(policyFile)
 
 	caller := &CallerContext{
 		Name:        "ssh",
@@ -855,7 +868,7 @@ rules:
     action: deny
 `
 	os.WriteFile(policyFile, []byte(yaml), 0644)
-	policy := NewPolicy(policyFile, "")
+	policy := newTestPolicyFromFile(policyFile)
 
 	caller := &CallerContext{
 		Name:        "ssh",       // won't match "git"

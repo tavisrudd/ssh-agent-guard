@@ -35,6 +35,7 @@ type logEvent struct {
 	Rule                      string            `yaml:"rule,omitempty"`
 	ConfirmMethod             string            `yaml:"confirm_method,omitempty"`
 	LogFile                   string            `yaml:"log_file,omitempty"`
+	ConfigSHA256              string            `yaml:"config_sha256,omitempty"`
 	Env                       map[string]string `yaml:"env,omitempty"`
 	LocalProcTree             []logAncestor     `yaml:"local_proc_tree,omitempty"`
 }
@@ -54,14 +55,52 @@ type currentStatus struct {
 	Previous *logEvent     `yaml:"previous,omitempty"`
 }
 
+// literalString marshals as a YAML block scalar (| style) for human readability.
+type literalString string
+
+func (s literalString) MarshalYAML() (interface{}, error) {
+	return &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!str",
+		Value: string(s),
+		Style: yaml.LiteralStyle,
+	}, nil
+}
+
+// configReloadLog is the YAML structure for successful config reload log files.
+// Includes full config content so log entries can be tied back to specific
+// configs even after those config files are gone.
+type configReloadLog struct {
+	Timestamp     string        `yaml:"timestamp"`
+	Trigger       string        `yaml:"trigger"`
+	ConfigSHA256  string        `yaml:"config_sha256"`
+	ConfigContent literalString `yaml:"config_content"`
+}
+
+// configReloadFailedLog is the YAML structure for failed config reload log files.
+type configReloadFailedLog struct {
+	Timestamp       string          `yaml:"timestamp"`
+	Trigger         string          `yaml:"trigger"`
+	Errors          []string        `yaml:"errors"`
+	ActiveConfigSHA string          `yaml:"active_config_sha256,omitempty"`
+	BadConfig       *badConfigEntry `yaml:"bad_config,omitempty"`
+}
+
+// badConfigEntry holds the content and SHA256 of a config file that failed to parse.
+type badConfigEntry struct {
+	SHA256  string        `yaml:"sha256"`
+	Content literalString `yaml:"content"`
+}
+
 // Logger writes event detail files (YAML) and maintains current.yaml
 // via an external render helper, following the same patterns as gpg-log-caller.
 type Logger struct {
-	stateDir  string
-	renderBin string
-	mu        sync.Mutex
-	previous  *logEvent // stored for current.yaml previous section
-	policy    *Policy   // for config status in current.yaml
+	stateDir        string
+	renderBin       string
+	mu              sync.Mutex
+	previous        *logEvent // stored for current.yaml previous section
+	policy          *Policy   // for config status in current.yaml
+	lastLoggedSHA   string    // SHA256 of last config snapshot written (skip duplicates)
 }
 
 func NewLogger(stateDir string, policy *Policy) *Logger {
@@ -236,8 +275,14 @@ func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *Session
 	filename := fmt.Sprintf("%s-%s-%s-%s.yaml", now.Format("20060102-150405"), slug, dest, decision)
 	logPath := filepath.Join(l.stateDir, filename)
 
-	// Build event and write log file
+	// Build event and write log file.
+	// NOTE: ConfigSHA256 is read here at log-write time, not at evaluation time.
+	// If a config reload occurs during a long confirmation wait (e.g. YubiKey touch),
+	// the sha may be one version newer than the policy that evaluated the request.
 	ev := buildSignEvent(now, ctx, key, session, &result, "")
+	if l.policy != nil {
+		ev.ConfigSHA256 = l.policy.ConfigSHA256()
+	}
 	writeLogFile(logPath, ev)
 
 	// Journal line for final result
@@ -272,6 +317,9 @@ func (l *Logger) LogMutation(ctx *CallerContext, op string) {
 
 	// Build event and write log file
 	ev := buildMutationEvent(now, ctx, op, "")
+	if l.policy != nil {
+		ev.ConfigSHA256 = l.policy.ConfigSHA256()
+	}
 	writeLogFile(logPath, ev)
 
 	log.Printf("DENIED %s from %s pid=%d", op, ctx.Name, ctx.PID)
@@ -300,6 +348,90 @@ func (l *Logger) NotifyReload() {
 	defer l.mu.Unlock()
 
 	l.writeCurrentAndRender(&status)
+}
+
+// LogConfigChange writes a timestamped config log file to the state directory.
+// On success (result.OK), writes a config-reload file with the active config's
+// SHA256 and full content — but only if the SHA256 actually changed.
+// On failure (!result.OK), always writes a config-reload-failed file with
+// errors and the bad file content from the LoadResult.
+func (l *Logger) LogConfigChange(result LoadResult) {
+	now := time.Now()
+	ts := now.Format("2006-01-02T15:04:05")
+
+	if !result.OK {
+		filename := fmt.Sprintf("%s-config-reload-failed.yaml", now.Format("20060102-150405"))
+		logPath := filepath.Join(l.stateDir, filename)
+
+		var activeSHA string
+		if l.policy != nil {
+			activeSHA = l.policy.ConfigSHA256()
+		}
+		ev := &configReloadFailedLog{
+			Timestamp:       ts,
+			Trigger:         "config-reload-failed",
+			Errors:          result.Errors,
+			ActiveConfigSHA: activeSHA,
+		}
+		if result.BadConfigSHA != "" {
+			ev.BadConfig = &badConfigEntry{
+				SHA256:  result.BadConfigSHA,
+				Content: literalString(result.BadContent),
+			}
+		}
+
+		data, err := yaml.Marshal(ev)
+		if err != nil {
+			log.Printf("yaml marshal config reload failed: %v", err)
+			return
+		}
+		if err := os.WriteFile(logPath, data, 0644); err != nil {
+			log.Printf("log write %s: %v", logPath, err)
+		}
+		return
+	}
+
+	// Success — only write if config actually changed.
+	// The sha dedup also handles the Watch + SIGHUP race: both paths serialize
+	// through Policy.Load()'s mutex, and the second caller here sees the sha
+	// was already logged and skips the duplicate write.
+	if l.policy == nil {
+		return
+	}
+	sha := l.policy.ConfigSHA256()
+	if sha == "" {
+		return // no config file loaded (file absent)
+	}
+
+	// lastLoggedSHA is set before the file write. If WriteFile fails, the next
+	// reload with the same sha will be skipped — acceptable since a write failure
+	// implies a persistent disk issue affecting all logging.
+	l.mu.Lock()
+	if sha == l.lastLoggedSHA {
+		l.mu.Unlock()
+		return
+	}
+	l.lastLoggedSHA = sha
+	l.mu.Unlock()
+
+	filename := fmt.Sprintf("%s-config-reload.yaml", now.Format("20060102-150405"))
+	logPath := filepath.Join(l.stateDir, filename)
+
+	ev := &configReloadLog{
+		Timestamp:     ts,
+		Trigger:       "config-reload",
+		ConfigSHA256:  sha,
+		ConfigContent: literalString(l.policy.ConfigContent()),
+	}
+
+	data, err := yaml.Marshal(ev)
+	if err != nil {
+		log.Printf("yaml marshal config reload: %v", err)
+		return
+	}
+	if err := os.WriteFile(logPath, data, 0644); err != nil {
+		log.Printf("log write %s: %v", logPath, err)
+	}
 }
 
 // writeIdle writes current.yaml with state=idle + stored previous. Must hold l.mu.

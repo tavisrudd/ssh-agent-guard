@@ -90,7 +90,8 @@ func newTestPolicy(t *testing.T, yaml string) *Policy {
 	if err := os.WriteFile(policyFile, []byte(yaml), 0644); err != nil {
 		t.Fatal(err)
 	}
-	return NewPolicy(policyFile, "")
+	policy, _ := NewPolicy(policyFile)
+	return policy
 }
 
 func TestProxyListKeys(t *testing.T) {
@@ -261,7 +262,7 @@ func TestProxyLogWritten(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
 	os.WriteFile(policyFile, []byte("default_action: allow\nrules: []\n"), 0644)
-	policy := NewPolicy(policyFile, "")
+	policy, _ := NewPolicy(policyFile)
 
 	stateDir := filepath.Join(dir, "state")
 	logger := NewLogger(stateDir, policy)

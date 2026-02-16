@@ -60,7 +60,8 @@ func main() {
 		return
 	}
 
-	policy := NewPolicy(policyPath, filepath.Join(stateDir, "config_error.yaml"))
+	errorFile := filepath.Join(stateDir, "config_error.yaml")
+	policy, initialResult := NewPolicy(policyPath)
 
 	// Build confirm config from policy and write pin.env for the helper script
 	var confirmCfg atomic.Pointer[ConfirmConfig]
@@ -75,10 +76,14 @@ func main() {
 	}
 
 	logger := NewLogger(stateDir, policy)
+	logger.LogConfigChange(initialResult)
+	syncErrorFile(errorFile, initialResult)
 
-	policy.OnReload(func() {
+	policy.OnReload(func(result LoadResult) {
 		updateConfirmCfg()
+		logger.LogConfigChange(result)
 		logger.NotifyReload()
+		syncErrorFile(errorFile, result)
 	})
 	policy.Watch()
 	updateConfirmCfg()
@@ -111,10 +116,12 @@ func main() {
 	go func() {
 		for range hupCh {
 			log.Printf("SIGHUP: reloading policy and known_hosts")
-			policy.Load()
+			result := policy.Load()
 			knownHosts.Store(NewKnownHostsResolver(knownHostsPath))
 			updateConfirmCfg()
+			logger.LogConfigChange(result)
 			logger.NotifyReload()
+			syncErrorFile(errorFile, result)
 		}
 	}()
 
@@ -201,6 +208,19 @@ func xdgRuntimeDir() string {
 		return dir
 	}
 	return fmt.Sprintf("/run/user/%d", os.Getuid())
+}
+
+// syncErrorFile writes or removes the config error file based on the load result.
+func syncErrorFile(path string, result LoadResult) {
+	if result.OK {
+		os.Remove(path)
+	} else {
+		content := "errors:\n"
+		for _, e := range result.Errors {
+			content += fmt.Sprintf("  - %q\n", e)
+		}
+		os.WriteFile(path, []byte(content), 0644)
+	}
 }
 
 // writePINEnv writes a shell-sourceable config file for the ssh-ag-confirm

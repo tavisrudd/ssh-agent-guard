@@ -99,7 +99,7 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 		out.PolicyEvaluation.Key = &keyFingerprint
 	}
 
-	policy := NewPolicy(policyPath, "")
+	policy, _ := NewPolicy(policyPath)
 	results := policy.EvaluateVerbose(ctx, nil, keyFingerprint)
 
 	for _, r := range results {
