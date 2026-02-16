@@ -35,10 +35,11 @@ physical confirmation per request.
 
 - **Caller identification** via SO_PEERCRED + /proc (process name,
   command line, ancestry, cwd, environment, tmux window)
-- **YAML policy engine** with 15 match fields (caller, ancestor,
-  ssh_dest, remote_dest, forwarded, container, env, cwd, ...)
-- **YubiKey confirmation** — HMAC touch (local) and PIN entry
-  (remote via tmux popup)
+- **YAML policy engine** with match fields (process_name, parent_process_name, ancestor,
+  ssh_dest, is_forwarded, forwarded_via,
+  is_in_known_hosts, is_in_container, env, cwd, ...)
+- **YubiKey confirmation** — touch (local display) and PIN entry
+  (via tmux popup)
 - **Forwarded agent detection** via session-bind@openssh.com with
   known_hosts reverse lookup
 - **Structured audit logging** — YAML event files + journald
@@ -234,7 +235,8 @@ systemctl --user enable --now ssh-agent-guard
   No macOS or BSD support.
 - **OpenSSH 8.9+** — required for `session-bind@openssh.com`, which
   provides forwarded agent detection, destination host identification,
-  and `remote_dest`/`remote_dest_in`/`forwarded` policy matching.
+  and `ssh_dest` session-bind fallback, `is_in_known_hosts`, and `is_forwarded`
+  policy matching.
   Without it the guard still works but those fields are always empty.
 - **Go 1.24+** — for building from source.
 
@@ -244,9 +246,9 @@ systemctl --user enable --now ssh-agent-guard
   used for YubiKey HMAC confirmation.  When installed via the Nix flake,
   these are included in the wrapper's PATH.  Without a YubiKey,
   `action: confirm` rules degrade to `deny`.
-- **tmux** — used for remote confirmation popups (`ssh-ag-confirm`
+- **tmux** — used for PIN confirmation popups (`ssh-ag-confirm`
   runs in a tmux popup), status display (sets `@ssh_ag_status` user
-  option), and remote session detection.
+  option), and forwarded session detection.
 - **sway** — `hasActiveDisplay()` uses `swaymsg` to check compositor
   reachability and detect `swaylock`.  Other Wayland/X11 compositors
   would need equivalent logic.

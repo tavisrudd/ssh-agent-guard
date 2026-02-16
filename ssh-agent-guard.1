@@ -325,12 +325,13 @@ Used to verify YubiKey identity during confirmation.
 
 .TP
 \fB~/.local/state/ssh-ag/pending/\fP
-Directory for remote confirmation requests (FIFO-based).
+Directory for PIN confirmation requests (FIFO-based).
 
 .TP
 \fB~/.ssh/known_hosts\fP
 Parsed for reverse host key fingerprint to hostname mapping, enabling
-\fBremote_dest\fP policy matching on forwarded agent sessions.
+\fBssh_dest\fP fallback and \fBis_in_known_hosts\fP policy matching on forwarded
+agent sessions.
 Hashed entries (\fBHashKnownHosts\fP) are skipped (irreversible by design).
 
 
@@ -341,7 +342,8 @@ No macOS or BSD support.
 .IP \(bu 2
 \fBOpenSSH 8.9+\fP — required for \fBsession-bind@openssh.com\fR, which
 provides forwarded agent detection, destination host identification,
-and \fBremote_dest\fR/\fBremote_dest_in\fR/\fBforwarded\fR policy matching.
+and \fBssh_dest\fR session-bind fallback, \fBis_in_known_hosts\fR, and \fBis_forwarded\fR
+policy matching.
 Without it the guard still works but those fields are always empty.
 .IP \(bu 2
 \fBGo 1.24+\fP — for building from source.
@@ -353,9 +355,9 @@ used for YubiKey HMAC confirmation.  When installed via the Nix flake,
 these are included in the wrapper's PATH.  Without a YubiKey,
 \fBaction: confirm\fR rules degrade to \fBdeny\fR\&.
 .IP \(bu 2
-\fBtmux\fP — used for remote confirmation popups (\fBssh-ag-confirm\fR
+\fBtmux\fP — used for PIN confirmation popups (\fBssh-ag-confirm\fR
 runs in a tmux popup), status display (sets \fB@ssh_ag_status\fR user
-option), and remote session detection.
+option), and forwarded session detection.
 .IP \(bu 2
 \fBsway\fP — \fBhasActiveDisplay()\fR uses \fBswaymsg\fR to check compositor
 reachability and detect \fBswaylock\fR\&.  Other Wayland/X11 compositors

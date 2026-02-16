@@ -122,8 +122,8 @@ The client receives an error.
 \fBconfirm\fP
 Require physical confirmation before allowing.
 The confirmation method is chosen automatically:
-\fBhmac\fP (YubiKey touch) when a local display is active,
-\fBremote\fP (tmux popup PIN) when no display but YubiKey is present,
+\fBtouch\fP (YubiKey touch) when a local display is active,
+\fBpin\fP (tmux popup PIN) when no display but YubiKey is present,
 or deny with method \fBmissing\fP when neither is available.
 
 
@@ -147,17 +147,29 @@ Example: \fB~^ssh-.*$\fP\&.
 
 .SS Available match fields
 .TP
-\fBcaller:\fP \fIname\fP | [\fIname1\fP, \fIname2\fP]
-Process name of the connecting client.
+\fBprocess_name:\fP \fIname\fP | [\fIname1\fP, \fIname2\fP]
+Base executable name of the process connecting to the agent socket.
+Usually \fBssh\fP, since most programs (git, rsync, scp) spawn \fBssh\fR
+as a child rather than connecting to the agent directly.
+Use \fBparent_process_name\fP or \fBancestor\fP to distinguish what
+launched \fBssh\fR\&.
 Nix wrappers are automatically unwrapped
 (\fI\&.ssh-wrapped\fP becomes \fBssh\fP).
 Accepts a single string or a list (any match).
 Exact match, not a pattern.
 
 .TP
+\fBparent_process_name:\fP \fIname\fP | [\fIname1\fP, \fIname2\fP]
+Base executable name of the immediate parent of the connecting process.
+Useful for distinguishing what launched \fBssh\fR — for example,
+\fBgit\fP, \fBbash\fP, or \fBclaude\fP as the parent.
+Accepts a single string or a list (any match).
+Exact match.
+
+.TP
 \fBancestor:\fP \fIname\fP | [\fIname1\fP, \fIname2\fP]
-Match if any process in the caller's ancestry (up to 8 levels)
-has this name.
+Match if any process in the ancestry (up to 8 levels) has this name.
+Broader than \fBparent_process_name\fP — matches grandparents and above.
 Accepts a single string or a list.
 Exact match.
 
@@ -167,34 +179,28 @@ Glob or regex against the caller's full command line.
 
 .TP
 \fBssh_dest:\fP \fIpattern\fP
-Glob or regex against the SSH destination extracted from the caller's
-command line (\fIuser@host\fP or \fIhost\fP).
-Parsed with awareness of SSH flags, so \fBssh -p 22 user@host\fR
-correctly extracts \fBuser@host\fP\&.
+Glob or regex against the SSH destination (\fIuser@host\fP or \fIhost\fP).
+Resolved from the caller's command line when available, falling back
+to the hostname from \fBsession-bind@openssh.com\fP (via \fIknown_hosts\fP
+reverse lookup).
+This unified field works for both direct SSH connections and
+forwarded agent sessions.
 
 .TP
-\fBremote_dest:\fP \fIpattern\fP
-Glob or regex against the destination hostname resolved from the
-\fBsession-bind@openssh.com\fP extension via \fIknown_hosts\fP reverse lookup.
-Only populated for OpenSSH 8.9+ clients.
-Empty when the host key is not found in known_hosts or when entries
-are hashed.
+\fBis_in_known_hosts:\fP \fItrue\fP | \fIfalse\fP
+Boolean.
+Matches only if the session-bind destination host key
+was found in known_hosts.
 
 .TP
-\fBremote_dest_in:\fP \fIknown_hosts\fP
-Special check: matches only if the session-bind destination host key
-was found in known_hosts (i.e., \fBremote_dest\fP is non-empty).
-The only supported value is \fBknown_hosts\fP\&.
-
-.TP
-\fBvia_host:\fP \fIpattern\fP
-Glob or regex against the intermediate host extracted from SSH
-ControlMaster multiplexing.
+\fBforwarded_via:\fP \fIpattern\fP
+Glob or regex against the intermediate host in \fIuser@host\fP format,
+extracted from SSH ControlMaster multiplexing.
 Parsed from the mux process command line
 (\fIssh: /path/host_port_user [mux]\fP).
 
 .TP
-\fBforwarded:\fP \fItrue\fP | \fIfalse\fP
+\fBis_forwarded:\fP \fItrue\fP | \fIfalse\fP
 Boolean.
 Whether the agent connection is forwarded (from a remote SSH session)
 as reported by the \fBsession-bind@openssh.com\fP extension.
@@ -214,14 +220,7 @@ Glob or regex against the tmux session:window name (\fImain:claude\fP).
 Resolved from \fBTMUX_PANE\fP in the caller's environment.
 
 .TP
-\fBremote_session:\fP \fItrue\fP | \fIfalse\fP
-Boolean.
-Whether the caller is in a remote SSH session, detected via:
-tmux global environment (\fBSSH_CONNECTION\fP),
-process environment, or sshd in ancestry.
-
-.TP
-\fBcontainer:\fP \fItrue\fP | \fIfalse\fP
+\fBis_in_container:\fP \fItrue\fP | \fIfalse\fP
 Boolean.
 Whether the caller is in a different PID namespace from the proxy
 (e.g., a container).
@@ -256,24 +255,24 @@ rules:
   # Direct SSH to known hosts
   - name: direct-known
     match:
-      remote_dest_in: known_hosts
+      is_in_known_hosts: true
     action: allow
 
   # Forwarded agent to known hosts
   - name: forwarded-known
     match:
-      forwarded: true
-      remote_dest_in: known_hosts
+      is_forwarded: true
+      is_in_known_hosts: true
     action: allow
 
   # Forwarded to unknown hosts
   - name: forwarded-unknown
     match:
-      forwarded: true
+      is_forwarded: true
     action: deny
 .EE
 
-.SS Confirm for Claude and remote sessions
+.SS Confirm for AI tools
 .EX
 default_action: allow
 
@@ -282,11 +281,6 @@ rules:
     match:
       env:
         CLAUDECODE: "1"
-    action: confirm
-
-  - name: remote-confirm
-    match:
-      remote_session: true
     action: confirm
 .EE
 
@@ -297,7 +291,7 @@ default_action: allow
 rules:
   - name: container-deny
     match:
-      container: true
+      is_in_container: true
     action: deny
 .EE
 
@@ -306,10 +300,10 @@ rules:
 default_action: confirm
 
 rules:
-  - name: from-src
+  - name: git-from-src
     match:
       cwd: "/home/alice/src/*"
-      caller: [ssh, git-remote-https, git]
+      parent_process_name: [git, git-remote-https]
     action: allow
 .EE
 
