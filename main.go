@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"golang.org/x/crypto/ssh/agent"
+	"gopkg.in/yaml.v3"
 )
 
 var verbose bool
@@ -215,11 +216,15 @@ func syncErrorFile(path string, result LoadResult) {
 	if result.OK {
 		os.Remove(path)
 	} else {
-		content := "errors:\n"
-		for _, e := range result.Errors {
-			content += fmt.Sprintf("  - %q\n", e)
+		type errorFile struct {
+			Errors []string `yaml:"errors"`
 		}
-		os.WriteFile(path, []byte(content), 0644)
+		data, err := yaml.Marshal(&errorFile{Errors: result.Errors})
+		if err != nil {
+			log.Printf("syncErrorFile: marshal: %v", err)
+			return
+		}
+		os.WriteFile(path, data, 0644)
 	}
 }
 

@@ -130,10 +130,12 @@ func (r *KnownHostsResolver) loadFile(path string) {
 
 		keyBytes, err := base64.StdEncoding.DecodeString(keyB64)
 		if err != nil {
+			log.Printf("known_hosts: %s: bad base64 for host %s: %v", path, hostnames, err)
 			continue
 		}
 		key, err := ssh.ParsePublicKey(keyBytes)
 		if err != nil {
+			log.Printf("known_hosts: %s: bad public key for host %s: %v", path, hostnames, err)
 			continue
 		}
 		fp := ssh.FingerprintSHA256(key)

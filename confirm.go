@@ -31,17 +31,12 @@ type ConfirmConfig struct {
 }
 
 func DefaultConfirmConfig() ConfirmConfig {
-	home := os.Getenv("HOME")
-	stateDir := filepath.Join(home, ".local", "state", "ssh-ag")
 	return ConfirmConfig{
-		Challenge:     "deadbeef",
-		Slot:          "2",
-		Timeout:       20 * time.Second,
-		ResponseDir:   filepath.Join(stateDir, "confirm"),
-		PINSlot:       "1",
+		Challenge:  "deadbeef",
+		Slot:       "2",
+		Timeout:    20 * time.Second,
+		PINSlot:    "1",
 		PINTimeout: 120 * time.Second,
-		PendingDir:    filepath.Join(stateDir, "pending"),
-		DenyPath:      filepath.Join(stateDir, "confirm", "denied"),
 	}
 }
 
@@ -92,7 +87,9 @@ var extraBinPathsVal atomic.Value // stores []string
 
 func getExtraBinPaths() []string {
 	if v := extraBinPathsVal.Load(); v != nil {
-		return v.([]string)
+		if paths, ok := v.([]string); ok {
+			return paths
+		}
 	}
 	return nil
 }

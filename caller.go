@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -127,9 +128,12 @@ func getPeerCred(conn net.Conn) *unix.Ucred {
 
 	var ucred *unix.Ucred
 	var credErr error
-	rawConn.Control(func(fd uintptr) {
+	if err := rawConn.Control(func(fd uintptr) {
 		ucred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	})
+	}); err != nil {
+		log.Printf("peercred: Control: %v", err)
+		return nil
+	}
 	if credErr != nil {
 		return nil
 	}
@@ -347,23 +351,44 @@ func extractSSHDest(cmdline string) string {
 		return ""
 	}
 
-	// SSH flags that consume the next argument
-	flagsWithArg := map[string]bool{
-		"-b": true, "-c": true, "-D": true, "-E": true, "-e": true,
-		"-F": true, "-I": true, "-i": true, "-J": true, "-L": true,
-		"-l": true, "-m": true, "-O": true, "-o": true, "-p": true,
-		"-Q": true, "-R": true, "-S": true, "-W": true, "-w": true,
+	// SSH flags that consume the next argument (when separated by space)
+	flagsWithArg := map[byte]bool{
+		'b': true, 'c': true, 'D': true, 'E': true, 'e': true,
+		'F': true, 'I': true, 'i': true, 'J': true, 'L': true,
+		'l': true, 'm': true, 'O': true, 'o': true, 'p': true,
+		'Q': true, 'R': true, 'S': true, 'W': true, 'w': true,
 	}
 
 	i := 1
 	for i < len(args) {
 		arg := args[i]
-		if strings.HasPrefix(arg, "-") {
-			if flagsWithArg[arg] {
-				i += 2 // skip flag + its value
-			} else {
-				i++
+		if len(arg) > 1 && arg[0] == '-' && arg[1] != '-' {
+			// Single-dash flag(s). Could be:
+			//   -p 22          (flag with separate arg)
+			//   -p22           (flag with concatenated arg)
+			//   -NTf           (combined boolean flags)
+			//   -NTfp 22       (combined booleans ending with arg-taking flag)
+			// Walk the flag characters to determine behavior.
+			consumed := false
+			for j := 1; j < len(arg); j++ {
+				if flagsWithArg[arg[j]] {
+					if j+1 < len(arg) {
+						// Value concatenated: -p22 — skip this arg
+					} else {
+						// Value is next arg: -p 22 — skip both
+						i++
+					}
+					consumed = true
+					break
+				}
+				// Boolean flag, continue to next char
 			}
+			_ = consumed
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			i++
 			continue
 		}
 		// First non-flag argument is the destination

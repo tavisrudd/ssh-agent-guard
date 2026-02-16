@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"log"
@@ -19,9 +20,9 @@ import (
 type Action int
 
 const (
-	Allow   Action = iota
-	Deny    Action = iota
-	Confirm Action = iota
+	Allow Action = iota
+	Deny
+	Confirm
 )
 
 func parseAction(s string) (Action, error) {
@@ -237,19 +238,56 @@ type matchPattern struct {
 	regex *regexp.Regexp // non-nil if regex mode (~prefix)
 }
 
-func compilePattern(s string) *matchPattern {
-	if s == "" {
+// extractRuleLines parses YAML into a node tree and returns the line number
+// of each entry in the "rules" sequence. Used for error reporting only.
+func extractRuleLines(data []byte) []int {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(root.Content)-1; i += 2 {
+		if root.Content[i].Value == "rules" {
+			seq := root.Content[i+1]
+			if seq.Kind != yaml.SequenceNode {
+				return nil
+			}
+			lines := make([]int, len(seq.Content))
+			for j, node := range seq.Content {
+				lines[j] = node.Line
+			}
+			return lines
+		}
+	}
+	return nil
+}
+
+// sanitizeYAMLError strips Go-internal type names from yaml.v3 error messages.
+// "field foo not found in type main.MatchSpec" → "unknown field foo"
+var yamlTypeRe = regexp.MustCompile(` not found in type \S+`)
+
+func sanitizeYAMLError(msg string) string {
+	return yamlTypeRe.ReplaceAllString(msg, " is not a valid field")
+}
+
+func compilePattern(s string) (*matchPattern, error) {
+	if s == "" {
+		return nil, nil
 	}
 	if strings.HasPrefix(s, "~") {
 		re, err := regexp.Compile(s[1:])
 		if err != nil {
-			log.Printf("policy: bad regex %q: %v", s, err)
-			return nil
+			return nil, fmt.Errorf("bad regex %q: %v", s, err)
 		}
-		return &matchPattern{raw: s, regex: re}
+		return &matchPattern{raw: s, regex: re}, nil
 	}
-	return &matchPattern{raw: s}
+	return &matchPattern{raw: s}, nil
 }
 
 // matchString tests a value against a pattern (glob or regex).
@@ -316,7 +354,7 @@ func (p *Policy) OnReload(fn func(LoadResult)) {
 }
 
 // Watch uses inotify to watch the policy file for changes and reloads
-// when modified. Only reloads if the new config parses successfully.
+// when modified. Calls onReload with a LoadResult indicating success or failure.
 func (p *Policy) Watch() {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -370,28 +408,33 @@ func (p *Policy) Load() LoadResult {
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Printf("policy: no config at %s, defaulting to confirm-all", p.path)
-		} else {
-			log.Printf("policy: read %s: %v", p.path, err)
-		}
-		p.config = config
-		p.defaultAction = Confirm
-		p.rules = nil
-		p.activeVersion = time.Time{}
-		p.configSHA256 = ""
-		p.configContent = ""
-		resolveBins()
-		if os.IsNotExist(err) {
+			p.config = config
+			p.defaultAction = Confirm
+			p.rules = nil
+			p.activeVersion = time.Time{}
+			p.configSHA256 = ""
+			p.configContent = ""
+			resolveBins()
 			return LoadResult{OK: true}
 		}
+		// Read error (EPERM, etc.) — keep previous valid config
+		log.Printf("policy: read %s: %v (keeping previous)", p.path, err)
 		return LoadResult{OK: false, Errors: []string{err.Error()}}
 	}
 
-	if err := yaml.Unmarshal(data, config); err != nil {
-		log.Printf("policy: parse %s: %v (keeping previous)", p.path, err)
+	// Pre-parse into node tree to extract line numbers for error reporting.
+	// This is a lightweight pass; the strict decode below does the real validation.
+	ruleLines := extractRuleLines(data)
+
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(config); err != nil {
+		errMsg := sanitizeYAMLError(err.Error())
+		log.Printf("policy: %s: %s (keeping previous)", p.path, errMsg)
 		badHash := sha256.Sum256(data)
 		return LoadResult{
 			OK:           false,
-			Errors:       []string{err.Error()},
+			Errors:       []string{errMsg},
 			BadConfigSHA: fmt.Sprintf("%x", badHash),
 			BadContent:   string(data),
 		}
@@ -399,26 +442,56 @@ func (p *Policy) Load() LoadResult {
 
 	defaultAction, err := parseAction(config.DefaultAction)
 	if err != nil {
-		log.Printf("policy: %v, defaulting to allow", err)
-		defaultAction = Allow
+		errMsg := fmt.Sprintf("invalid default_action: %s", err)
+		log.Printf("policy: %s: %s (keeping previous)", p.path, errMsg)
+		badHash := sha256.Sum256(data)
+		return LoadResult{
+			OK:           false,
+			Errors:       []string{errMsg},
+			BadConfigSHA: fmt.Sprintf("%x", badHash),
+			BadContent:   string(data),
+		}
 	}
 
 	var rules []compiledRule
+	var compileErrors []string
 	for i, r := range config.Rules {
-		action, err := parseAction(r.Action)
-		if err != nil {
-			log.Printf("policy: rule %d: %v, skipping", i, err)
-			continue
-		}
 		name := r.Name
 		if name == "" {
 			name = fmt.Sprintf("rule-%d", i)
 		}
+		linePrefix := ""
+		if i < len(ruleLines) {
+			linePrefix = fmt.Sprintf("line %d: ", ruleLines[i])
+		}
+		action, err := parseAction(r.Action)
+		if err != nil {
+			compileErrors = append(compileErrors, fmt.Sprintf("%srule %d (%s): invalid action %q (expected allow, deny, or confirm)", linePrefix, i, name, r.Action))
+			continue
+		}
+		match, err := compileMatch(r.Match)
+		if err != nil {
+			compileErrors = append(compileErrors, fmt.Sprintf("%srule %d (%s): %v", linePrefix, i, name, err))
+			continue
+		}
 		rules = append(rules, compiledRule{
 			name:   name,
 			action: action,
-			match:  compileMatch(r.Match),
+			match:  match,
 		})
+	}
+	if len(compileErrors) > 0 {
+		log.Printf("policy: %s: %d compile error(s) (keeping previous)", p.path, len(compileErrors))
+		for _, e := range compileErrors {
+			log.Printf("  %s", e)
+		}
+		badHash := sha256.Sum256(data)
+		return LoadResult{
+			OK:           false,
+			Errors:       compileErrors,
+			BadConfigSHA: fmt.Sprintf("%x", badHash),
+			BadContent:   string(data),
+		}
 	}
 
 	p.config = config
@@ -495,22 +568,34 @@ func buildConfirmConfig(config *PolicyConfig) ConfirmConfig {
 	return cfg
 }
 
-func compileMatch(m MatchSpec) compiledMatch {
-	return compiledMatch{
-		processName:        m.ProcessName,
-		parentProcessName:  m.ParentProcessName,
-		ancestor:           m.Ancestor,
-		command:            compilePattern(m.Command),
-		sshDest:            compilePattern(m.SSHDest),
-		isInKnownHosts:     m.IsInKnownHosts,
-		forwardedVia:       compilePattern(m.ForwardedVia),
-		isForwarded:        m.IsForwarded,
-		key:                m.Key,
-		cwd:                compilePattern(m.CWD),
-		tmuxWindow:         compilePattern(m.TmuxWindow),
-		isInContainer:      m.IsInContainer,
-		env:                m.Env,
+func compileMatch(m MatchSpec) (compiledMatch, error) {
+	var errs []string
+	compile := func(field, s string) *matchPattern {
+		p, err := compilePattern(s)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", field, err))
+		}
+		return p
 	}
+	cm := compiledMatch{
+		processName:       m.ProcessName,
+		parentProcessName: m.ParentProcessName,
+		ancestor:          m.Ancestor,
+		command:           compile("command", m.Command),
+		sshDest:           compile("ssh_dest", m.SSHDest),
+		isInKnownHosts:    m.IsInKnownHosts,
+		forwardedVia:      compile("forwarded_via", m.ForwardedVia),
+		isForwarded:       m.IsForwarded,
+		key:               m.Key,
+		cwd:               compile("cwd", m.CWD),
+		tmuxWindow:        compile("tmux_window", m.TmuxWindow),
+		isInContainer:     m.IsInContainer,
+		env:               m.Env,
+	}
+	if len(errs) > 0 {
+		return cm, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return cm, nil
 }
 
 // EvalResult holds the policy decision and the rule that produced it.
@@ -582,13 +667,21 @@ func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, ke
 	}
 
 	// is_in_known_hosts: session-bind destination resolved against known_hosts
-	if m.isInKnownHosts != nil && *m.isInKnownHosts {
+	if m.isInKnownHosts != nil {
 		sessionDest := ""
 		if session != nil {
 			sessionDest = session.DestHostname
 		}
-		if sessionDest == "" {
-			return false
+		if *m.isInKnownHosts {
+			// true: require the dest to be known (non-empty hostname from known_hosts)
+			if sessionDest == "" {
+				return false
+			}
+		} else {
+			// false: match when dest is NOT in known_hosts (no session-bind or empty hostname)
+			if sessionDest != "" {
+				return false
+			}
 		}
 	}
 
@@ -705,13 +798,19 @@ func (m *compiledMatch) checkMismatches(ctx *CallerContext, session *SessionBind
 	if !m.sshDest.matchString(sshDest) {
 		mm = append(mm, fmt.Sprintf("ssh_dest: want %q, got %q", m.sshDest.raw, sshDest))
 	}
-	if m.isInKnownHosts != nil && *m.isInKnownHosts {
+	if m.isInKnownHosts != nil {
 		sessionDest := ""
 		if session != nil {
 			sessionDest = session.DestHostname
 		}
-		if sessionDest == "" {
-			mm = append(mm, "is_in_known_hosts: no session-bind dest")
+		if *m.isInKnownHosts {
+			if sessionDest == "" {
+				mm = append(mm, "is_in_known_hosts: want true, no session-bind dest")
+			}
+		} else {
+			if sessionDest != "" {
+				mm = append(mm, fmt.Sprintf("is_in_known_hosts: want false, but dest %q is in known_hosts", sessionDest))
+			}
 		}
 	}
 	if !m.forwardedVia.matchString(ctx.ForwardedVia) {

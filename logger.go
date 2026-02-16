@@ -239,15 +239,15 @@ func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *S
 	now := time.Now()
 	pending := buildSignEvent(now, ctx, key, session, &result, "")
 
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	status := currentStatus{
 		State:    "confirming",
 		Text:     text,
 		Pending:  pending,
 		Previous: l.previous,
 	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	l.writeCurrentAndRender(&status)
 }
@@ -338,14 +338,14 @@ func (l *Logger) LogMutation(ctx *CallerContext, op string) {
 // NotifyReload updates current.yaml to show that the config was reloaded
 // and renders the status bar. Called from SIGHUP and fsnotify reload paths.
 func (l *Logger) NotifyReload() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	status := currentStatus{
 		State:    "reloaded",
 		Text:     "config reloaded",
 		Previous: l.previous,
 	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	l.writeCurrentAndRender(&status)
 }
@@ -468,7 +468,9 @@ func (l *Logger) writeCurrentFile(status *currentStatus) {
 		return
 	}
 	currentFile := filepath.Join(l.stateDir, "current.yaml")
-	os.WriteFile(currentFile, data, 0644)
+	if err := os.WriteFile(currentFile, data, 0644); err != nil {
+		log.Printf("write %s: %v", currentFile, err)
+	}
 }
 
 // render calls the external render helper to produce i3status + tmux-status.

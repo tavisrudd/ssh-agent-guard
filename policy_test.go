@@ -3,9 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -101,12 +102,16 @@ func TestGlobMatch(t *testing.T) {
 
 func TestCompilePattern(t *testing.T) {
 	// Nil for empty string
-	if p := compilePattern(""); p != nil {
-		t.Error("compilePattern(\"\") should be nil")
+	p, err := compilePattern("")
+	if p != nil || err != nil {
+		t.Error("compilePattern(\"\") should be nil with no error")
 	}
 
 	// Glob pattern
-	p := compilePattern("foo*")
+	p, err = compilePattern("foo*")
+	if err != nil {
+		t.Fatalf("compilePattern(\"foo*\") error: %v", err)
+	}
 	if p == nil || p.regex != nil {
 		t.Error("compilePattern(\"foo*\") should be glob")
 	}
@@ -115,7 +120,10 @@ func TestCompilePattern(t *testing.T) {
 	}
 
 	// Regex pattern (~ prefix)
-	p = compilePattern("~^ssh-.*$")
+	p, err = compilePattern("~^ssh-.*$")
+	if err != nil {
+		t.Fatalf("compilePattern(\"~^ssh-.*$\") error: %v", err)
+	}
 	if p == nil || p.regex == nil {
 		t.Error("compilePattern(\"~^ssh-.*$\") should be regex")
 	}
@@ -126,10 +134,10 @@ func TestCompilePattern(t *testing.T) {
 		t.Error("~^ssh-.*$ should not match git")
 	}
 
-	// Invalid regex returns nil
-	p = compilePattern("~[invalid")
-	if p != nil {
-		t.Error("compilePattern with invalid regex should return nil")
+	// Invalid regex returns an error
+	_, err = compilePattern("~[invalid")
+	if err == nil {
+		t.Error("compilePattern with invalid regex should return error")
 	}
 }
 
@@ -540,6 +548,42 @@ rules:
 			wantRule:   "default",
 		},
 		{
+			name: "is_in_known_hosts false matches unknown host",
+			yaml: `
+default_action: allow
+rules:
+  - name: unknown-host
+    match:
+      is_in_known_hosts: false
+    action: deny
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session:    nil,
+			wantAction: Deny,
+			wantRule:   "unknown-host",
+		},
+		{
+			name: "is_in_known_hosts false does not match known host",
+			yaml: `
+default_action: allow
+rules:
+  - name: unknown-host
+    match:
+      is_in_known_hosts: false
+    action: deny
+`,
+			caller: &CallerContext{
+				Name: "ssh", Env: map[string]string{},
+			},
+			session: &SessionBindInfo{
+				DestHostname: "known.example.com",
+			},
+			wantAction: Allow,
+			wantRule:   "default",
+		},
+		{
 			name: "multiple match fields AND logic",
 			yaml: `
 default_action: deny
@@ -796,7 +840,14 @@ func TestSyncErrorFile(t *testing.T) {
 	if err != nil {
 		t.Fatal("error file should exist after failed load")
 	}
-	if !strings.Contains(string(data), "errors:") {
+	// Verify error file is valid YAML and contains readable errors
+	var parsed struct {
+		Errors []string `yaml:"errors"`
+	}
+	if err := yamlv3.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("error file is not valid YAML: %v\ncontents: %s", err, data)
+	}
+	if len(parsed.Errors) == 0 {
 		t.Errorf("error file should contain errors, got: %s", data)
 	}
 
@@ -886,5 +937,92 @@ rules:
 	}
 	if len(results[0].Mismatches) != 3 {
 		t.Errorf("expected 3 mismatches, got %d: %v", len(results[0].Mismatches), results[0].Mismatches)
+	}
+}
+
+func TestPolicyLoadBadRegexRejectsConfig(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	// Load valid config first
+	valid := "default_action: deny\nrules:\n  - name: good\n    match:\n      ssh_dest: \"*.example.com\"\n    action: allow\n"
+	os.WriteFile(policyFile, []byte(valid), 0644)
+	policy := newTestPolicyFromFile(policyFile)
+
+	// Verify it loaded
+	result := policy.Evaluate(
+		&CallerContext{Name: "ssh", SSHDest: "foo.example.com", Env: map[string]string{}},
+		nil, "",
+	)
+	if result.Action != Allow {
+		t.Fatal("valid config should allow foo.example.com")
+	}
+
+	// Overwrite with bad regex — should keep previous config
+	bad := "default_action: allow\nrules:\n  - name: broken\n    match:\n      ssh_dest: \"~[invalid\"\n    action: deny\n"
+	os.WriteFile(policyFile, []byte(bad), 0644)
+	loadResult := policy.Load()
+
+	if loadResult.OK {
+		t.Error("config with bad regex should fail to load")
+	}
+	if len(loadResult.Errors) == 0 {
+		t.Error("should report compile errors")
+	}
+	if loadResult.BadConfigSHA == "" {
+		t.Error("should include bad config SHA")
+	}
+
+	// Previous config still active
+	result = policy.Evaluate(
+		&CallerContext{Name: "ssh", SSHDest: "foo.example.com", Env: map[string]string{}},
+		nil, "",
+	)
+	if result.Action != Allow {
+		t.Errorf("should keep previous config after bad regex, got %v", result.Action)
+	}
+}
+
+func TestPolicyLoadUnknownFieldRejectsConfig(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	// Typo in field name: "proccess_name" instead of "process_name"
+	bad := "default_action: deny\nrules:\n  - name: typo\n    match:\n      proccess_name: ssh\n    action: allow\n"
+	os.WriteFile(policyFile, []byte(bad), 0644)
+	_, loadResult := NewPolicy(policyFile)
+
+	if loadResult.OK {
+		t.Error("config with unknown field should fail to load")
+	}
+	if len(loadResult.Errors) == 0 {
+		t.Error("should report parse error for unknown field")
+	}
+}
+
+func TestPolicyLoadBadDefaultActionRejectsConfig(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	valid := "default_action: deny\nrules: []\n"
+	os.WriteFile(policyFile, []byte(valid), 0644)
+	policy := newTestPolicyFromFile(policyFile)
+
+	// Overwrite with typo in default_action
+	bad := "default_action: alow\nrules: []\n"
+	os.WriteFile(policyFile, []byte(bad), 0644)
+	loadResult := policy.Load()
+
+	if loadResult.OK {
+		t.Error("config with bad default_action should fail to load")
+	}
+
+	// Previous config still active (deny, not the broken "alow")
+	result := policy.Evaluate(
+		&CallerContext{Name: "ssh", Env: map[string]string{}},
+		nil, "",
+	)
+	if result.Action != Deny {
+		t.Errorf("should keep previous config after bad default_action, got %v", result.Action)
 	}
 }

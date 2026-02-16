@@ -64,6 +64,12 @@ func TestExtractSSHDest(t *testing.T) {
 		{"ssh -L 8080:localhost:80 user@host", "user@host"},
 		{"ssh -R 9090:localhost:90 user@host", "user@host"},
 		{"ssh -D 1080 user@host", "user@host"},
+		// Combined flags: -p22 (value concatenated)
+		{"ssh -p22 user@host", "user@host"},
+		// Combined boolean + arg-taking flag: -NTfp 22
+		{"ssh -NTfp 22 user@host", "user@host"},
+		// Combined boolean flags only
+		{"ssh -NTf user@host", "user@host"},
 	}
 	for _, tt := range tests {
 		got := extractSSHDest(tt.cmdline)
