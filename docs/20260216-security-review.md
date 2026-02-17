@@ -207,23 +207,23 @@ exec could change what /proc shows between connect(2) and the reads.
 
 ### Verified Accurate Claims
 
-| Claim | Location | Verdict |
-|-------|----------|---------|
-| SO_PEERCRED is kernel-verified, unfakeable | caller-identification.md | **Correct** |
-| OpenSSH 8.9+ for session-bind | multiple files | **Correct** |
-| FIDO2 resident keys require OpenSSH 8.2+ | defense-in-depth.md | **Correct** |
-| Landlock is Linux 5.13+ and unprivileged | system-setup.md | **Correct** |
-| CAP_DAC_READ_SEARCH bypasses directory perms | system-setup.md | **Correct** |
-| CVE-2023-38408 (agent forwarding RCE) | why-this-matters.md | **Correct** (CVSS 9.8 per Qualys) |
-| CVE-2025-55284 (Claude Code allowlist bypass) | why-this-matters.md | **Correct** |
-| CVE-2025-66032 (Claude Code cmd validation bypass) | why-this-matters.md | **Correct** |
-| Matrix.org 2019 incident | why-this-matters.md | **Correct** |
-| Codecov 2021 incident | why-this-matters.md | **Correct** |
-| guardian-agent unmaintained | README.md | **Correct** (last activity 2019) |
-| MITRE ATT&CK T1552.004, T1563.001 | why-this-matters.md | **Correct technique IDs** |
-| ssh-add -h limitations | why-this-matters.md | **Correct** |
-| Hashed known_hosts are irreversible (HMAC-SHA1) | forwarding.md | **Correct** |
-| ~1ms per operation overhead | README.md | **Plausible** — /proc reads are memory-backed |
+| Claim                                    | Location         | Verdict                     |
+|------------------------------------------|------------------|-----------------------------|
+| SO_PEERCRED kernel-verified, unfakeable  | caller-id        | **Correct**                 |
+| OpenSSH 8.9+ for session-bind            | multiple files   | **Correct**                 |
+| FIDO2 resident keys require OpenSSH 8.2+ | defense-in-depth | **Correct**                 |
+| Landlock is Linux 5.13+, unprivileged    | system-setup     | **Correct**                 |
+| CAP_DAC_READ_SEARCH bypasses dir perms   | system-setup     | **Correct**                 |
+| CVE-2023-38408 (forwarding RCE)          | why-this-matters | **Correct** (CVSS 9.8)      |
+| CVE-2025-55284 (CC allowlist bypass)     | why-this-matters | **Correct**                 |
+| CVE-2025-66032 (CC cmd validation)       | why-this-matters | **Correct**                 |
+| Matrix.org 2019 incident                 | why-this-matters | **Correct**                 |
+| Codecov 2021 incident                    | why-this-matters | **Correct**                 |
+| guardian-agent unmaintained              | README           | **Correct** (last act 2019) |
+| MITRE ATT&CK T1552.004, T1563.001        | why-this-matters | **Correct technique IDs**   |
+| ssh-add -h limitations                   | why-this-matters | **Correct**                 |
+| Hashed known_hosts irreversible (HMAC)   | forwarding       | **Correct**                 |
+| ~1ms per operation overhead              | README           | **Plausible** (/proc fast)  |
 
 ### Minor Nits
 

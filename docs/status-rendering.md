@@ -87,12 +87,12 @@ Called when there's an active notification to display.
 
 Available variables:
 
-| Variable | Description |
-|----------|-------------|
-| `EV_TYPE` | Event type: `confirming`, `allow`, `deny`, `confirmed`, `confirm-denied`, `reloaded`, `reload-error`, `cfg-error` |
-| `COLOR` | Hex color for the event (solarized palette) |
-| `TEXT` | Human-readable summary string |
-| `CFG_ERROR` | `"true"` if `config_error.yaml` exists |
+| Variable    | Description                                     |
+|-------------|-------------------------------------------------|
+| `EV_TYPE`   | Event type (see "States" and "Decision values") |
+| `COLOR`     | Hex color for the event (solarized palette)     |
+| `TEXT`      | Human-readable summary string                   |
+| `CFG_ERROR` | `"true"` if `config_error.yaml` exists          |
 
 Also available: `STATE_DIR`, `I3STATUS` (paths for file output).
 
@@ -101,18 +101,18 @@ Also available: `STATE_DIR`, `I3STATUS` (paths for file output).
 Called when an active notification expires (via background sleep timer).
 Transitions to a residual display.
 
-| Variable | Description |
-|----------|-------------|
-| `DECAY_TIME` | `"HH:MM:SS"` from the previous event, or empty |
-| `DECAY_DENIED` | `"true"` if the previous event was a denial |
-| `CFG_ERROR` | `"true"` if `config_error.yaml` exists (re-checked) |
+| Variable       | Description                                         |
+|----------------|-----------------------------------------------------|
+| `DECAY_TIME`   | `"HH:MM"` from the previous event, or empty         |
+| `DECAY_DENIED` | `"true"` if the previous event was a denial         |
+| `CFG_ERROR`    | `"true"` if `config_error.yaml` exists (re-checked) |
 
 ### render_clear
 
 Called to clear all display (or show a persistent config error indicator).
 
-| Variable | Description |
-|----------|-------------|
+| Variable    | Description                            |
+|-------------|----------------------------------------|
 | `CFG_ERROR` | `"true"` if `config_error.yaml` exists |
 
 ### Example: desktop notifications
@@ -287,47 +287,47 @@ event details.  Persists until resolved.
 
 ### Decision values
 
-| Value | Meaning |
-|-------|---------|
-| `allow` | Policy allowed the operation |
-| `deny` | Policy denied the operation |
-| `confirmed` | User approved via YubiKey touch or PIN |
+| Value            | Meaning                                   |
+|------------------|-------------------------------------------|
+| `allow`          | Policy allowed the operation              |
+| `deny`           | Policy denied the operation               |
+| `confirmed`      | User approved via YubiKey touch or PIN    |
 | `confirm-denied` | User denied, timed out, or confirm failed |
 
 ### Confirm method values
 
-| Value | Meaning |
-|-------|---------|
-| `touch` | YubiKey HMAC touch (local display active) |
-| `pin` | PIN entry via tmux popup (no local display) |
-| `missing` | No confirmation method available (denied) |
-| `rate-limited` | Too many concurrent confirms (denied) |
+| Value          | Meaning                                     |
+|----------------|---------------------------------------------|
+| `touch`        | YubiKey HMAC touch (local display active)   |
+| `pin`          | PIN entry via tmux popup (no local display) |
+| `missing`      | No confirmation method available (denied)   |
+| `rate-limited` | Too many concurrent confirms (denied)       |
 
 ### logEvent fields
 
 Both `pending` and `previous` contain the full `logEvent` structure:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `timestamp` | string | `2006-01-02T15:04:05` format |
-| `trigger` | string | `sign`, `add`, `remove`, `remove-all`, `lock`, `unlock` |
-| `process_name` | string | Caller process name (Nix wrappers unwrapped) |
-| `local_pid` | int | Caller PID |
-| `tmux_window` | string | e.g. `main:code` (empty if not in tmux) |
-| `key_fingerprint` | string | `SHA256:...` (sign only) |
-| `ssh_dest` | string | SSH destination (from cmdline or session-bind) |
-| `forwarded_via` | string | Intermediate host for forwarded sessions |
-| `is_forwarded` | bool | Whether session-bind indicated forwarding |
-| `dest_key_fingerprint` | string | Remote host key fingerprint (session-bind) |
-| `local_cwd` | string | Caller's working directory |
-| `is_forwarded_session` | bool | Whether caller is in a forwarded SSH session |
-| `is_container` | bool | Whether caller is in a different PID namespace |
-| `decision` | string | `allow`, `deny`, `confirmed`, `confirm-denied` |
-| `rule` | string | Name of the matched rule (or `default`) |
-| `confirm_method` | string | `touch`, `pin`, `missing`, `rate-limited` |
-| `config_sha256` | string | SHA256 of the active policy file |
-| `env` | map | Selected environment variables from caller |
-| `local_proc_tree` | list | Process ancestry (`pid`, `name`, `command`) |
+| Field                  | Type   | Description                                             |
+|------------------------|--------|---------------------------------------------------------|
+| `timestamp`            | string | `2006-01-02T15:04:05` format                            |
+| `trigger`              | string | `sign`, `add`, `remove`, `remove-all`, `lock`, `unlock` |
+| `process_name`         | string | Caller process name (Nix wrappers unwrapped)            |
+| `local_pid`            | int    | Caller PID                                              |
+| `tmux_window`          | string | e.g. `main:code` (empty if not in tmux)                 |
+| `key_fingerprint`      | string | `SHA256:...` (sign only)                                |
+| `ssh_dest`             | string | SSH destination (from cmdline or session-bind)          |
+| `forwarded_via`        | string | Intermediate host for forwarded sessions                |
+| `is_forwarded`         | bool   | Whether session-bind indicated forwarding               |
+| `dest_key_fingerprint` | string | Remote host key fingerprint (session-bind)              |
+| `local_cwd`            | string | Caller's working directory                              |
+| `is_forwarded_session` | bool   | Whether caller is in a forwarded SSH session            |
+| `is_container`         | bool   | Whether caller is in a different PID namespace          |
+| `decision`             | string | `allow`, `deny`, `confirmed`, `confirm-denied`          |
+| `rule`                 | string | Name of the matched rule (or `default`)                 |
+| `confirm_method`       | string | `touch`, `pin`, `missing`, `rate-limited`               |
+| `config_sha256`        | string | SHA256 of the active policy file                        |
+| `env`                  | map    | Selected environment variables from caller              |
+| `local_proc_tree`      | list   | Process ancestry (`pid`, `name`, `command`)             |
 
 ### config_error.yaml
 

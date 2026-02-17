@@ -179,12 +179,17 @@ Glob or regex against the caller's full command line.
 
 .TP
 \fBssh_dest:\fP \fIpattern\fP
-Glob or regex against the SSH destination (\fIuser@host\fP or \fIhost\fP).
+Match against the SSH destination hostname or \fIuser@host\fP\&.
 Resolved from the caller's command line when available, falling back
 to the hostname from \fBsession-bind@openssh.com\fP (via \fIknown_hosts\fP
 reverse lookup).
-This unified field works for both direct SSH connections and
-forwarded agent sessions.
+Patterns \fBwithout @\fP match the hostname only — the \fIuser@\fP prefix
+is stripped before matching.  "github.com" matches both "github.com"
+and "git@github.com".
+Patterns \fBwith @\fP match the full \fIuser@host\fP string.
+"git@github.com" matches only "git@github.com", not "deploy@github.com".
+Place specific \fIuser@host\fP rules before broader hostname rules to
+avoid shadowing.
 
 .TP
 \fBis_in_known_hosts:\fP \fItrue\fP | \fIfalse\fP

@@ -201,10 +201,12 @@ gap.  See the SYSTEM SETUP section.
 ptrace any process, and bypass all user-level controls.
 .IP \(bu 2
 \fBTOCTOU\fP (time-of-check-time-of-use) — caller identity is gathered
-at connect(2) time via SO_PEERCRED.  If a process calls exec(2)
-between connecting and signing, the policy evaluation uses the
-pre-exec identity.  In practice this is a narrow window (microseconds)
-and requires a process specifically designed to exploit it.
+once per connection at accept(2) time and not re-read on each sign
+request.  If a process calls exec(2) after identity is captured,
+subsequent sign requests use the stale (pre-exec) identity.  There
+is also a narrow race between connect(2) and the /proc reads where
+an exec could cause the proxy to see the post-exec identity instead.
+Both scenarios require a process specifically designed to exploit them.
 .IP \(bu 2
 \fBYubiKey coercion\fP — if confirmation is required and an attacker has
 physical access to your YubiKey (or can socially engineer you into
@@ -235,6 +237,10 @@ Even without filesystem hardening, the proxy provides substantial value:
 (ssh, git, rsync, and nearly all SSH clients)
 .IP \(bu 2
 \fBMutation blocking\fP (add/remove/lock/unlock always denied)
+.IP \(bu 2
+\fBConfirmation rate limiting\fP — concurrent pending confirmations
+are capped (\fBconfirm.max_pending\fR, default 3) to prevent same-user
+processes from flooding the confirmation UI
 
 .PP
 Most real-world threats (AI coding tools, scripts, forwarded sessions)
@@ -365,6 +371,8 @@ Each sign or mutation event produces a timestamped YAML file.
 Live status file consumed by status bar renderers (i3status-rs, tmux).
 Contains current state (idle/confirming), pending request details, and
 previous event.
+See \fIdocs/status-rendering.md\fP in the source repository for the full
+schema and instructions for writing a custom renderer.
 
 .TP
 \fB~/.local/state/ssh-ag/config_error.yaml\fP

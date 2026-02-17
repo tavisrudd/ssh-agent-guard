@@ -62,7 +62,7 @@ render_notify() {
 # Transitions to a residual display (timestamp, denied indicator).
 #
 # Variables:
-#   DECAY_TIME    — "HH:MM:SS" from the previous event, or empty
+#   DECAY_TIME    — "HH:MM" from the previous event, or empty
 #   DECAY_DENIED  — "true" if the previous event was a denial, or empty
 #   CFG_ERROR     — "true" if config_error.yaml exists (re-checked at decay time)
 #
@@ -363,6 +363,7 @@ if [ "$STATE" = "idle" ] && [ -n "$EV_TYPE" ]; then
     DECAY_TIME=""
     if [ -n "$PREV_TIMESTAMP" ]; then
         DECAY_TIME="${PREV_TIMESTAMP#*T}"
+        DECAY_TIME="${DECAY_TIME%:*}"  # HH:MM (strip seconds)
     fi
     DECAY_DENIED=""
     DECAY_SECS=10

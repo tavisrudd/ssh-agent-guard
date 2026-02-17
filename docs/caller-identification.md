@@ -26,13 +26,13 @@ reliable anchor for the rest of its `/proc` reads.
 
 With the kernel-verified PID, the proxy reads:
 
-| Source | Field | Notes |
-|--------|-------|-------|
-| `/proc/$pid/cmdline` | Command line | Null-separated, joined with spaces |
-| `/proc/$pid/cwd` | Working directory | Symlink to actual path |
-| `/proc/$pid/environ` | Environment | Selected variables only (see below) |
-| `/proc/$pid/stat` | Parent PID | Used for ancestry walking |
-| `/proc/$pid/ns/pid` | PID namespace | Compared to proxy's own namespace |
+| Source               | Field             | Notes                               |
+|----------------------|-------------------|-------------------------------------|
+| `/proc/$pid/cmdline` | Command line      | Null-separated, joined with spaces  |
+| `/proc/$pid/cwd`     | Working directory | Symlink to actual path              |
+| `/proc/$pid/environ` | Environment       | Selected variables only (see below) |
+| `/proc/$pid/stat`    | Parent PID        | Used for ancestry walking           |
+| `/proc/$pid/ns/pid`  | PID namespace     | Compared to proxy's own namespace   |
 
 ### Environment capture
 

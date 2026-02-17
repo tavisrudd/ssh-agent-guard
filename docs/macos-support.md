@@ -42,9 +42,9 @@ has different but largely equivalent mechanisms.
 
 ### Peer credentials
 
-| Data | Linux | macOS |
-|------|-------|-------|
-| PID | `SO_PEERCRED` → `ucred.Pid` | `LOCAL_PEERPID` via `GetsockoptInt()` |
+| Data    | Linux                           | macOS                                     |
+|---------|---------------------------------|-------------------------------------------|
+| PID     | `SO_PEERCRED` → `ucred.Pid`     | `LOCAL_PEERPID` via `GetsockoptInt()`     |
 | UID/GID | `SO_PEERCRED` → `ucred.Uid/Gid` | `LOCAL_PEERCRED` via `GetsockoptXucred()` |
 
 Both are populated by the kernel at `connect(2)` time and cannot be
@@ -58,13 +58,13 @@ and stable.
 
 ### Process inspection
 
-| Data | Linux | macOS |
-|------|-------|-------|
-| Executable path | `/proc/$pid/exe` readlink | `proc_pidpath()` (libproc) |
-| Command line | `/proc/$pid/cmdline` | `sysctl KERN_PROCARGS2` |
-| Environment | `/proc/$pid/environ` | `sysctl KERN_PROCARGS2` (env follows argv on user stack) |
-| Working directory | `/proc/$pid/cwd` readlink | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` |
-| Parent PID | `/proc/$pid/stat` field 4 | `sysctl KERN_PROC` → `kinfo_proc` |
+| Data              | Linux                     | macOS                                    |
+|-------------------|---------------------------|------------------------------------------|
+| Executable path   | `/proc/$pid/exe` readlink | `proc_pidpath()` (libproc)               |
+| Command line      | `/proc/$pid/cmdline`      | `sysctl KERN_PROCARGS2`                  |
+| Environment       | `/proc/$pid/environ`      | `sysctl KERN_PROCARGS2` (env after argv) |
+| Working directory | `/proc/$pid/cwd` readlink | `proc_pidinfo(PROC_PIDVNODEPATHINFO)`    |
+| Parent PID        | `/proc/$pid/stat` field 4 | `sysctl KERN_PROC` → `kinfo_proc`        |
 
 All macOS APIs work for same-user processes without root.
 `KERN_PROCARGS2` returns the full user stack region (exec path + argv +
@@ -95,15 +95,15 @@ This is the single biggest portability risk.
 
 These need new platform-specific code but are straightforward:
 
-| Component | Linux | macOS |
-|-----------|-------|-------|
-| Runtime dir | `$XDG_RUNTIME_DIR` or `/run/user/$UID` | `$TMPDIR` (per-user, launchd-managed) |
-| Binary search paths | `/run/current-system/sw/bin`, `/usr/bin` | `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` |
-| Display lock detection | `swaymsg` + `swaylock` check | `CGSessionCopyCurrentDictionary` or `ioreg` |
-| Service management | systemd user unit | launchd plist |
-| Status bar | i3status-rs pango + tmux | tmux only (no i3status-rs) |
-| `stat` in scripts | GNU `stat -c %Y` | BSD `stat -f %m` |
-| Build targets | `x86_64-linux`, `aarch64-linux` | add `x86_64-darwin`, `aarch64-darwin` |
+| Component      | Linux                                  | macOS                                 |
+|----------------|----------------------------------------|---------------------------------------|
+| Runtime dir    | `$XDG_RUNTIME_DIR` or `/run/user/$UID` | `$TMPDIR` (per-user, launchd-managed) |
+| Binary paths   | `/run/current-system/sw/bin`           | `/opt/homebrew/bin`, `/usr/local/bin` |
+| Lock detection | `swaymsg` + `swaylock` check           | `CGSessionCopyCurrentDictionary`      |
+| Service mgmt   | systemd user unit                      | launchd plist                         |
+| Status bar     | i3status-rs pango + tmux               | tmux only (no i3status-rs)            |
+| `stat` command | GNU `stat -c %Y`                       | BSD `stat -f %m`                      |
+| Build targets  | `x86_64-linux`, `aarch64-linux`        | + `x86_64-darwin`, `aarch64-darwin`   |
 
 ## Implementation approach
 
@@ -127,24 +127,24 @@ The cleanest path:
 
 ## Feature matrix
 
-| Feature | Linux | macOS |
-|---------|-------|-------|
-| Agent protocol proxy | yes | yes |
-| Policy engine | yes | yes |
-| Session-bind / forwarding detection | yes | yes (macOS ships OpenSSH 9.x) |
-| Known-hosts reverse lookup | yes | yes |
-| Caller PID (kernel-verified) | yes (`SO_PEERCRED`) | yes (`LOCAL_PEERPID`, undocumented) |
-| Caller UID/GID | yes | yes (`LOCAL_PEERCRED`) |
-| Process name, cmdline | yes (`/proc`) | yes (`KERN_PROCARGS2`) |
-| Environment vars | yes (`/proc`) | yes (`KERN_PROCARGS2`) |
-| Working directory | yes (`/proc`) | yes (`proc_pidinfo`) |
-| Ancestry walking | yes (`/proc`) | yes (`sysctl KERN_PROC`) |
-| Container detection | yes (PID namespace) | n/a |
-| YubiKey confirmation | yes | yes (Homebrew) |
-| Display lock detection | yes (sway) | needs rewrite |
-| Logging | yes | yes |
-| fsnotify policy reload | yes (inotify) | yes (kqueue) |
-| Mutation blocking | yes | yes |
+| Feature                             | Linux               | macOS                               |
+|-------------------------------------|---------------------|-------------------------------------|
+| Agent protocol proxy                | yes                 | yes                                 |
+| Policy engine                       | yes                 | yes                                 |
+| Session-bind / forwarding detection | yes                 | yes (macOS ships OpenSSH 9.x)       |
+| Known-hosts reverse lookup          | yes                 | yes                                 |
+| Caller PID (kernel-verified)        | yes (`SO_PEERCRED`) | yes (`LOCAL_PEERPID`, undocumented) |
+| Caller UID/GID                      | yes                 | yes (`LOCAL_PEERCRED`)              |
+| Process name, cmdline               | yes (`/proc`)       | yes (`KERN_PROCARGS2`)              |
+| Environment vars                    | yes (`/proc`)       | yes (`KERN_PROCARGS2`)              |
+| Working directory                   | yes (`/proc`)       | yes (`proc_pidinfo`)                |
+| Ancestry walking                    | yes (`/proc`)       | yes (`sysctl KERN_PROC`)            |
+| Container detection                 | yes (PID namespace) | n/a                                 |
+| YubiKey confirmation                | yes                 | yes (Homebrew)                      |
+| Display lock detection              | yes (sway)          | needs rewrite                       |
+| Logging                             | yes                 | yes                                 |
+| fsnotify policy reload              | yes (inotify)       | yes (kqueue)                        |
+| Mutation blocking                   | yes                 | yes                                 |
 
 ## Upstream socket protection
 
@@ -232,11 +232,11 @@ path and the fact that well-behaved software uses `SSH_AUTH_SOCK`.
 
 On both platforms, a same-user attacker can discover the upstream path:
 
-| Method | Linux | macOS |
-|--------|-------|-------|
-| Process arguments | `cat /proc/$(pidof ssh-agent-guard)/cmdline` | `ps -eo args \| grep ssh-agent-guard` |
-| Open file descriptors | `/proc/$pid/fd/` | `lsof -p $pid` |
-| Filesystem search | `find $XDG_RUNTIME_DIR -name 'S.gpg-agent*'` | `find $TMPDIR -name '*.sock'` |
+| Method       | Linux                                    | macOS                                 |
+|--------------|------------------------------------------|---------------------------------------|
+| Process args | `/proc/$(pidof ssh-agent-guard)/cmdline` | `ps -eo args \| grep ssh-agent-guard` |
+| Open FDs     | `/proc/$pid/fd/`                         | `lsof -p $pid`                        |
+| FS search    | `find $XDG_RUNTIME_DIR -name 'S.gpg-*'`  | `find $TMPDIR -name '*.sock'`         |
 
 The 0700 directory doesn't prevent discovery — it prevents *traversal*
 by other UIDs.  A same-user process that discovers the path can connect
@@ -244,15 +244,15 @@ to it directly.
 
 ## Threat model differences
 
-| Threat | Linux | macOS | Notes |
-|--------|-------|-------|-------|
-| Untrusted process uses SSH_AUTH_SOCK | Guard applies policy | Same | Primary use case, identical |
-| Untrusted process bypasses to upstream | Preventable (Landlock, namespaces, MAC) | Hard to prevent (sandbox-exec deprecated) | Main gap |
-| Agent forwarding abuse | Session-bind detection | Same | Protocol-level, OS-independent |
-| AI tool prompt injection | Policy + confirmation | Same | `CLAUDECODE` env detection works on both |
-| Container with bind-mounted socket | Detectable (PID namespace) | N/A | Docker Desktop uses Linux VM |
-| Root compromise | Bypasses all controls | Same | Out of scope for both |
-| PID recycling attack | Narrow window, large PID range | Same narrow window | macOS PIDs are 32-bit |
+| Threat               | Linux                  | macOS                | Notes                |
+|----------------------|------------------------|----------------------|----------------------|
+| Uses SSH_AUTH_SOCK   | Guard applies policy   | Same                 | Primary use case     |
+| Bypass to upstream   | Preventable (Landlock) | Hard (sandbox depr.) | **Main gap**         |
+| Forwarding abuse     | Session-bind detection | Same                 | Protocol-level       |
+| AI tool injection    | Policy + confirmation  | Same                 | `CLAUDECODE` on both |
+| Container bind-mount | Detectable (PID ns)    | N/A                  | Docker uses Linux VM |
+| Root compromise      | Bypasses all           | Same                 | Out of scope         |
+| PID recycling        | Narrow window          | Same                 | macOS PIDs 32-bit    |
 
 ## Summary
 

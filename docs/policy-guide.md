@@ -89,13 +89,13 @@ means `github.com` matches both `github.com` (session-bind) and
 user portion.  `git@github.com` matches only `git@github.com`, not
 `deploy@github.com` or bare `github.com`.
 
-| Pattern | Matches `git@github.com` | Matches `deploy@github.com` | Matches `github.com` |
-|---------|-------------------------|----------------------------|----------------------|
-| `github.com` | yes (hostname match) | yes (hostname match) | yes |
-| `git@github.com` | yes | no | no |
-| `*.example.com` | — | — | — |
-| `git@*` | yes | no | no |
-| `*@github.com` | yes | yes | no |
+| Pattern          | `git@github.com` | `deploy@github.com` | `github.com` |
+|------------------|------------------|---------------------|--------------|
+| `github.com`     | yes (hostname)   | yes (hostname)      | yes          |
+| `git@github.com` | yes              | no                  | no           |
+| `*.example.com`  | —                | —                   | —            |
+| `git@*`          | yes              | no                  | no           |
+| `*@github.com`   | yes              | yes                 | no           |
 
 **Rule ordering for mixed specificity:** Place specific `user@host`
 rules before broader hostname rules.  First match wins:
