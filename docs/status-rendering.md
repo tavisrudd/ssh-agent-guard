@@ -7,40 +7,240 @@ display targets it supports (status bar, terminal title, desktop
 notification, etc.).
 
 The bundled `ssh-ag-render-status` script targets **i3status-rs** (pango
-markup file) and **tmux** (user option).  You can replace it with your
-own script that reads the same YAML and renders to any target.
+markup file) and **tmux** (user option).  You can customize rendering
+at two levels: override just the render functions (keeping the bundled
+lifecycle/decay logic), or replace the entire script.
+
+## Bundled renderer setup
+
+### tmux
+
+The renderer sets a global user option `@ssh_ag_status` on each event.
+Reference it in your status line:
+
+```
+# ~/.tmux.conf
+set -g status-right '#{@ssh_ag_status} %H:%M'
+```
+
+The option contains tmux format strings (`#[bg=...,fg=...,bold]`)
+that render as colored badges.  When idle, the option is empty.
+
+No polling or interval is needed — the renderer calls
+`tmux set -g @ssh_ag_status` and `tmux refresh-client -S` directly,
+so updates appear instantly.
+
+### i3status-rs
+
+The renderer writes pango markup to `~/.local/state/ssh-ag/i3status`.
+Use a `custom` block with `file` format:
+
+```toml
+# ~/.config/i3status-rust/config.toml
+[[block]]
+block = "custom"
+format = " $text "
+[block.format]
+full = " {file:~/.local/state/ssh-ag/i3status} "
+```
+
+i3status-rs watches the file via inotify and updates when it changes.
+The file contains raw pango `<span>` markup with background/foreground
+colors.  When idle, the file is empty (block hidden).
+
+### Waybar
+
+Waybar can read the same i3status file, or you can write a custom
+renderer that outputs Waybar's native JSON:
+
+```json
+"custom/ssh-agent": {
+    "exec": "cat ~/.local/state/ssh-ag/i3status 2>/dev/null",
+    "interval": 1,
+    "format": "{}"
+}
+```
+
+## Customizing the renderer
+
+The bundled script has three concerns:
+
+1. **Parsing** — reads `current.yaml`, extracts fields
+2. **Classification** — maps state + decision to event type, color,
+   decay duration
+3. **Rendering** — updates display targets (i3status file, tmux option)
+
+The rendering is factored into three overridable functions.  The
+parsing, classification, and decay timer management are handled by
+the core script and don't need to be reimplemented.
+
+### Override file
+
+Create `~/.config/ssh-ag/render.sh` (or `$XDG_CONFIG_HOME/ssh-ag/render.sh`)
+to override any of the three render functions.  The file is sourced
+by the bundled script after the defaults are defined, so you only
+need to redefine the functions you want to change.
+
+### render_notify
+
+Called when there's an active notification to display.
+
+Available variables:
+
+| Variable | Description |
+|----------|-------------|
+| `EV_TYPE` | Event type: `confirming`, `allow`, `deny`, `confirmed`, `confirm-denied`, `reloaded`, `reload-error`, `cfg-error` |
+| `COLOR` | Hex color for the event (solarized palette) |
+| `TEXT` | Human-readable summary string |
+| `CFG_ERROR` | `"true"` if `config_error.yaml` exists |
+
+Also available: `STATE_DIR`, `I3STATUS` (paths for file output).
+
+### render_decay
+
+Called when an active notification expires (via background sleep timer).
+Transitions to a residual display.
+
+| Variable | Description |
+|----------|-------------|
+| `DECAY_TIME` | `"HH:MM:SS"` from the previous event, or empty |
+| `DECAY_DENIED` | `"true"` if the previous event was a denial |
+| `CFG_ERROR` | `"true"` if `config_error.yaml` exists (re-checked) |
+
+### render_clear
+
+Called to clear all display (or show a persistent config error indicator).
+
+| Variable | Description |
+|----------|-------------|
+| `CFG_ERROR` | `"true"` if `config_error.yaml` exists |
+
+### Example: desktop notifications
+
+Add `notify-send` alongside the default i3status/tmux rendering:
+
+```bash
+# ~/.config/ssh-ag/render.sh
+# Extend the default — call the original, then add notifications.
+# Save the original function before redefining.
+eval "$(declare -f render_notify | sed 's/render_notify/orig_render_notify/')"
+
+render_notify() {
+    orig_render_notify  # keep i3status + tmux working
+
+    case "$EV_TYPE" in
+        confirming)
+            notify-send -u critical -t 0 "ssh-agent-guard" "$TEXT" ;;
+        deny|confirm-denied)
+            notify-send -u normal "ssh-agent-guard" "$TEXT" ;;
+    esac
+}
+```
+
+### Example: replace tmux with terminal title
+
+```bash
+# ~/.config/ssh-ag/render.sh
+render_notify() {
+    if [ -n "$TEXT" ]; then
+        printf '\033]0;SSH: %s\007' "$TEXT"
+    fi
+    # still write i3status file
+    printf '<span background="%s" foreground="#ffffff">  %s  </span>' \
+        "$COLOR" "$TEXT" > "$I3STATUS"
+}
+
+render_decay() {
+    printf '\033]0;\007'  # clear title
+    : > "$I3STATUS"
+}
+
+render_clear() {
+    printf '\033]0;\007'
+    : > "$I3STATUS"
+}
+```
+
+### Example: only tmux, no i3status
+
+```bash
+# ~/.config/ssh-ag/render.sh
+render_notify() {
+    local prefix=""
+    case "$EV_TYPE" in confirming) prefix=" ▶" ;; esac
+    tmux set -g @ssh_ag_status \
+        "#[bg=$COLOR,fg=#ffffff,bold]${prefix} $TEXT #[default]" \
+        2>/dev/null || true
+    tmux refresh-client -S 2>/dev/null || true
+}
+
+render_decay() {
+    tmux set -g @ssh_ag_status "" 2>/dev/null || true
+    tmux refresh-client -S 2>/dev/null || true
+}
+
+render_clear() {
+    tmux set -g @ssh_ag_status "" 2>/dev/null || true
+    tmux refresh-client -S 2>/dev/null || true
+}
+```
+
+## Replacing the script entirely
+
+If the override mechanism isn't sufficient, replace
+`ssh-ag-render-status` entirely.  Place your script on `$PATH` (or
+in a directory listed in the policy's `path:` field) with the same
+name.  The daemon resolves it at startup and on each policy reload.
+
+Your script must:
+
+1. Read `~/.local/state/ssh-ag/current.yaml`
+2. Optionally read `~/.local/state/ssh-ag/config_error.yaml`
+3. Update its display target(s)
+4. Exit promptly (called synchronously for `confirming` states)
+
+You are responsible for decay timers and lifecycle management.
+
+Alternatively, ignore the daemon's invocations entirely and watch
+`current.yaml` with inotify:
+
+```bash
+inotifywait -m -e close_write ~/.local/state/ssh-ag/current.yaml |
+while read -r; do
+    # parse and render
+done
+```
 
 ## Interface contract
 
 ### Invocation
 
-The daemon calls `ssh-ag-render-status` (found via `$PATH` or the
-policy's `path:` search dirs) with **no arguments** and **no stdin**.
-The renderer must:
-
-1. Read `~/.local/state/ssh-ag/current.yaml`
-2. Optionally read `~/.local/state/ssh-ag/config_error.yaml` (presence
-   indicates a policy parse error)
-3. Update its display target(s)
-4. Exit promptly (the daemon may call it synchronously for confirming
-   states)
+The daemon calls `ssh-ag-render-status` with **no arguments** and
+**no stdin**.
 
 The renderer is called:
 - **Synchronously** when entering the `confirming` state (the user
   must see the prompt before the confirmation blocks)
-- **Asynchronously** (in a goroutine) when returning to `idle` after a
-  sign/mutation completes
+- **Asynchronously** (in a goroutine) when returning to `idle`
 
-### Replacing the renderer
+### Decay timers
 
-Place your script on `$PATH` (or in a directory listed in the policy's
-`path:` field) with the name `ssh-ag-render-status`.  The daemon
-resolves it once at startup and again on each policy reload.
+The bundled script manages decay via background subshells that sleep
+and re-render.  Each new invocation kills previous decay timers
+(tracked via PID files in the state directory).
 
-Alternatively, for testing, you can watch `current.yaml` with inotify
-and render independently of the daemon's invocations.
+Decay durations:
+- `allow`: 5s
+- `confirmed`: 2s (user just interacted)
+- `deny`: 10s (unexpected, needs attention)
+- `deny` + `method=missing`: 20s (no confirm path)
+- `confirm-denied`: 10s
+- `reloaded`: 3s
+- `reload-error`: 60s
+- Config error (prominent): 60s, then persistent indicator
+- `confirming`: no decay (persists until resolved)
 
-## current.yaml format
+## current.yaml reference
 
 Written atomically to `~/.local/state/ssh-ag/current.yaml` before
 each renderer invocation.
@@ -75,24 +275,17 @@ previous:                  # last completed operation (any state)
 ### States
 
 **`confirming`**
-: A sign request is waiting for user confirmation (YubiKey touch or
-PIN entry).  `text` contains a human-readable summary prefixed with
-`TOUCH YK:` (touch method) or `CONFIRM:` (PIN method).  `pending`
-has the full event details.  This state persists until the
-confirmation resolves — **no decay timer**.
+: Sign request waiting for user confirmation.  `text` is prefixed
+with `TOUCH YK:` (touch) or `CONFIRM:` (PIN).  `pending` has full
+event details.  Persists until resolved.
 
 **`idle`**
-: A sign or mutation operation just completed.  `text` contains a
-summary of what happened.  `previous` has the full event details
-including the `decision` field.  The renderer should display this
-briefly, then decay (the bundled script uses 2-20 seconds depending
-on outcome).
+: Operation just completed.  `previous` has full event details.
 
 **`reloaded`**
-: The policy file was reloaded (via inotify or SIGHUP).  `text` is
-`"config reloaded"`.  Brief display, then decay.
+: Policy file reloaded via inotify or SIGHUP.
 
-### Decision values (in `previous.decision`)
+### Decision values
 
 | Value | Meaning |
 |-------|---------|
@@ -101,7 +294,7 @@ on outcome).
 | `confirmed` | User approved via YubiKey touch or PIN |
 | `confirm-denied` | User denied, timed out, or confirm failed |
 
-### Confirm method values (in `pending.confirm_method` or `previous.confirm_method`)
+### Confirm method values
 
 | Value | Meaning |
 |-------|---------|
@@ -139,100 +332,9 @@ Both `pending` and `previous` contain the full `logEvent` structure:
 ### config_error.yaml
 
 Written when the policy file fails to parse; removed on successful
-load.  Presence of this file indicates an active config error.
+load.
 
 ```yaml
 errors:
   - "line 12: unknown field foo_bar"
 ```
-
-The renderer can check for this file to show a persistent error
-indicator.  The bundled script shows a prominent `CFG ERR` banner
-for the first 60 seconds, then decays to a persistent `CfgErr`
-suffix.
-
-## Display recommendations
-
-### Urgency mapping
-
-| State/decision | Urgency | Suggested behavior |
-|----------------|---------|-------------------|
-| `confirming` + `touch` | High | Prominent, persistent until resolved |
-| `confirming` + `pin` | High | Prominent, persistent until resolved |
-| `deny` / `confirm-denied` | Medium | Show for 10-20s, highlight in red |
-| `allow` / `confirmed` | Low | Show briefly (2-5s), neutral color |
-| `reloaded` | Low | Flash for 2-3s |
-| Config error | Medium | Persistent indicator until resolved |
-
-### Decay strategy
-
-The bundled renderer implements decay timers (background sleep +
-clear) so that idle notifications don't persist indefinitely.  Custom
-renderers should implement similar decay, either with timers or by
-polling `current.yaml` mtime.
-
-Decay durations in the bundled renderer:
-- `allow`: 5s
-- `confirmed`: 2s (user just interacted)
-- `deny`: 10s (unexpected, needs attention)
-- `deny` + `method=missing`: 20s (no confirm path, needs investigation)
-- `confirm-denied`: 10s
-- `reloaded`: 3s
-- Config error (prominent): 60s, then persistent indicator
-
-## Examples
-
-### Desktop notification renderer
-
-A minimal renderer using `notify-send`:
-
-```bash
-#!/bin/bash
-STATE_DIR="$HOME/.local/state/ssh-ag"
-STATE=$(grep '^state:' "$STATE_DIR/current.yaml" | awk '{print $2}')
-TEXT=$(grep '^text:' "$STATE_DIR/current.yaml" | sed 's/^text: *//')
-
-case "$STATE" in
-  confirming)
-    notify-send -u critical "ssh-agent-guard" "$TEXT" ;;
-  idle)
-    DECISION=$(sed -n '/^previous:/,/^[^ ]/{ /decision:/s/.*: *//p }' \
-      "$STATE_DIR/current.yaml")
-    case "$DECISION" in
-      deny|confirm-denied)
-        notify-send -u normal "ssh-agent-guard" "$TEXT" ;;
-    esac
-    ;;
-esac
-```
-
-### Waybar custom module
-
-A Waybar custom module that reads `current.yaml`:
-
-```json
-"custom/ssh-agent": {
-    "exec": "cat ~/.local/state/ssh-ag/i3status 2>/dev/null",
-    "interval": 1,
-    "format": "{}"
-}
-```
-
-Or write a custom renderer that outputs JSON for Waybar's native
-format (`{"text": "...", "class": "...", "tooltip": "..."}`).
-
-### Polling-based renderer
-
-Instead of being invoked by the daemon, watch the file directly:
-
-```bash
-#!/bin/bash
-inotifywait -m -e close_write ~/.local/state/ssh-ag/current.yaml |
-while read -r; do
-    # parse and render
-done
-```
-
-This approach works alongside (or instead of) the daemon-invoked
-renderer and is useful for display targets that prefer push-based
-updates.

@@ -1,25 +1,16 @@
 #!/bin/bash
-# ssh-ag-render-status — renders ssh-agent-guard status for i3status-rs and tmux
+# ssh-ag-render-status — renders ssh-agent-guard status for status bars
 # Ensure coreutils + tmux are in PATH (systemd services have minimal PATH)
 PATH="/run/current-system/sw/bin:/usr/bin:/bin:$PATH"
 #
-# Reads ~/.local/state/ssh-ag/current.yaml and produces:
-#   ~/.local/state/ssh-ag/i3status   — pango markup for i3status-rs (file, watched)
-#   tmux @ssh_ag_status             — tmux user option (set directly, instant)
+# Architecture:
+#   1. Parse current.yaml and classify the event
+#   2. Call render functions (render_notify, render_decay, render_clear)
+#   3. Manage decay timers (background sleep + re-render)
 #
-# For idle state with a previous decision, the result lingers for 10 seconds
-# before clearing (managed via a background decay process).
-#
-# Config errors (config_error.yaml present):
-#   Fresh (<60s): prominent "CFG ERR" notification, decays after 60s
-#   Stale (>=60s): persistent "CfgErr" suffix on all notifications
-#   Resolved (file removed): suffix clears
-#
-# current.yaml format:
-#   state: confirming|idle|reloaded
-#   text: "<summary string>"
-#   pending: { ... }           (only when state is confirming)
-#   previous: { ... }          (full details of last completed operation)
+# The render functions are overridable: place a script at
+# ~/.config/ssh-ag/render.sh that redefines any of them.
+# See docs/status-rendering.md for the full interface contract.
 #
 # Test mode:
 #   --test-tmux [FILE]      print tmux output to stdout (reads stdin if no FILE)
@@ -33,7 +24,103 @@ DECAY_PID="$STATE_DIR/.render-decay.pid"
 CFG_DECAY_PID="$STATE_DIR/.render-cfg-decay.pid"
 CFG_ERROR_FILE="$STATE_DIR/config_error.yaml"
 
-# Handle flags
+# ---------------------------------------------------------------------------
+# Render functions — override these in ~/.config/ssh-ag/render.sh
+# ---------------------------------------------------------------------------
+# All functions receive state via shell variables, not arguments.
+# Available variables are documented at each call site below.
+
+# render_notify: called when there's an active notification to display.
+#
+# Variables:
+#   EV_TYPE   — confirming, allow, deny, confirmed, confirm-denied,
+#               reloaded, reload-error, cfg-error
+#   COLOR     — solarized hex color for the event (#268bd2, #dc322f, etc.)
+#   TEXT      — human-readable summary string
+#   CFG_ERROR — "true" if config_error.yaml exists, "false" otherwise
+#
+render_notify() {
+    # tmux: colored background with bold text
+    local tmux_prefix=""
+    case "$EV_TYPE" in confirming) tmux_prefix=" ▶" ;; esac
+    local tmux_cfg_suffix=""
+    local i3_cfg_suffix=""
+    if [ "$CFG_ERROR" = "true" ]; then
+        tmux_cfg_suffix="#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]"
+        i3_cfg_suffix='<span background="#dc322f" foreground="#ffffff"> CfgErr </span>'
+    fi
+    local tmux_fmt="#[bg=$COLOR,fg=#ffffff,bold]${tmux_prefix} $TEXT #[default]${tmux_cfg_suffix}"
+    tmux set -g @ssh_ag_status "$tmux_fmt" 2>/dev/null || true
+    tmux refresh-client -S 2>/dev/null || true
+
+    # i3status-rs: pango markup file (watched via inotify)
+    printf '<span background="%s" foreground="#ffffff">  %s  </span>%s' \
+        "$COLOR" "$TEXT" "$i3_cfg_suffix" > "$I3STATUS"
+}
+
+# render_decay: called when an active notification expires.
+# Transitions to a residual display (timestamp, denied indicator).
+#
+# Variables:
+#   DECAY_TIME    — "HH:MM:SS" from the previous event, or empty
+#   DECAY_DENIED  — "true" if the previous event was a denial, or empty
+#   CFG_ERROR     — "true" if config_error.yaml exists (re-checked at decay time)
+#
+render_decay() {
+    local cfg_err_i3=""
+    local cfg_err_tmux=""
+    if [ "$CFG_ERROR" = "true" ]; then
+        cfg_err_i3=' <span background="#dc322f" foreground="#ffffff"> CfgErr </span>'
+        cfg_err_tmux="#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]"
+    fi
+
+    # i3status-rs: persistent timestamp indicator
+    if [ -n "$DECAY_TIME" ]; then
+        if [ "$DECAY_DENIED" = "true" ]; then
+            printf '(S: %s <span foreground="#dc322f">D</span>)%s' \
+                "$DECAY_TIME" "$cfg_err_i3" > "$I3STATUS"
+        else
+            printf '(S: %s)%s' "$DECAY_TIME" "$cfg_err_i3" > "$I3STATUS"
+        fi
+    elif [ -n "$cfg_err_i3" ]; then
+        printf '<span background="#dc322f" foreground="#ffffff"> CfgErr </span>' > "$I3STATUS"
+    else
+        : > "$I3STATUS"
+    fi
+
+    # tmux: clear (or show CfgErr)
+    tmux set -g @ssh_ag_status "$cfg_err_tmux" 2>/dev/null || true
+    tmux refresh-client -S 2>/dev/null || true
+}
+
+# render_clear: called to clear all display (or show persistent CfgErr).
+#
+# Variables:
+#   CFG_ERROR — "true" if config_error.yaml exists, "false" otherwise
+#
+render_clear() {
+    if [ "$CFG_ERROR" = "true" ]; then
+        printf '<span background="#dc322f" foreground="#ffffff"> CfgErr </span>' > "$I3STATUS"
+        tmux set -g @ssh_ag_status "#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]" 2>/dev/null || true
+    else
+        : > "$I3STATUS"
+        tmux set -g @ssh_ag_status "" 2>/dev/null || true
+    fi
+    tmux refresh-client -S 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Source user overrides (redefine render_notify/render_decay/render_clear)
+# ---------------------------------------------------------------------------
+RENDER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/ssh-ag/render.sh"
+if [ -f "$RENDER_CONF" ]; then
+    # shellcheck source=/dev/null
+    . "$RENDER_CONF"
+fi
+
+# ---------------------------------------------------------------------------
+# Parse flags
+# ---------------------------------------------------------------------------
 TEST_MODE=""
 TEST_LIVE=false
 for arg in "$@"; do
@@ -43,7 +130,6 @@ for arg in "$@"; do
         --test-live-status) TEST_LIVE=true ;;
     esac
 done
-# If in test mode, find the file argument (first non-flag arg after the test flag)
 if [ -n "$TEST_MODE" ]; then
     shift_done=false
     for arg in "$@"; do
@@ -62,7 +148,9 @@ if [ -n "$TEST_MODE" ]; then
     fi
 fi
 
-# Read fields from current.yaml
+# ---------------------------------------------------------------------------
+# Parse current.yaml
+# ---------------------------------------------------------------------------
 STATE=""
 TEXT=""
 SECTION=""
@@ -125,7 +213,9 @@ while IFS= read -r line; do
     esac
 done < "$CURRENT" 2>/dev/null
 
-# Check for config error
+# ---------------------------------------------------------------------------
+# Classify event
+# ---------------------------------------------------------------------------
 CFG_ERROR=false
 CFG_ERROR_FRESH=false
 if [ -f "$CFG_ERROR_FILE" ]; then
@@ -138,8 +228,7 @@ if [ -f "$CFG_ERROR_FILE" ]; then
     fi
 fi
 
-# Classify event type and derive color
-# EV_TYPE drives all rendering dispatch; COLOR is just the hex value
+# EV_TYPE drives all rendering dispatch; COLOR is the hex value
 EV_TYPE=""
 COLOR=""
 if [ "$STATE" = "reloaded" ]; then
@@ -164,49 +253,44 @@ elif [ "$STATE" = "idle" ] && [ -n "$PREV_DECISION" ]; then
 fi
 
 # Config error display logic (for non-reload states):
-#   Sign events always take priority — they get a "CfgErr" suffix (red bg)
+#   Sign events take priority — render_notify gets CFG_ERROR for suffix
 #   Fresh (<60s) + no sign event: show prominent "CFG ERR" notification
-#   Stale (>=60s) + no sign event: persistent indicator only (handled below)
-CFG_SUFFIX_TMUX=""
-CFG_SUFFIX_I3=""
+#   Stale (>=60s) + no sign event: persistent indicator only (via render_clear)
 if $CFG_ERROR && [ "$STATE" != "reloaded" ]; then
-    if [ -n "$EV_TYPE" ]; then
-        # Active sign event — add red-bg suffix
-        CFG_SUFFIX_TMUX="#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]"
-        CFG_SUFFIX_I3='<span background="#dc322f" foreground="#ffffff"> CfgErr </span>'
-    elif $CFG_ERROR_FRESH; then
-        # No sign event, fresh error — prominent display
+    if [ -z "$EV_TYPE" ] && $CFG_ERROR_FRESH; then
         EV_TYPE="cfg-error"
         COLOR="#dc322f"
         TEXT="CFG ERR: policy reload failed"
     fi
 fi
 
-# Build format strings from EV_TYPE
-# ▶ prefix is tmux-only (for confirming state)
-TMUX_PREFIX=""
-case "$EV_TYPE" in confirming) TMUX_PREFIX=" ▶" ;; esac
-
-TMUX_FMT=""
-I3_FMT=""
-if [ -n "$EV_TYPE" ]; then
-    TMUX_FMT="#[bg=$COLOR,fg=#ffffff,bold]${TMUX_PREFIX} $TEXT #[default]${CFG_SUFFIX_TMUX}"
-    I3_FMT="$(printf '<span background="%s" foreground="#ffffff">  %s  </span>%s' "$COLOR" "$TEXT" "$CFG_SUFFIX_I3")"
-fi
-
-# Test mode: print to stdout and exit
+# ---------------------------------------------------------------------------
+# Test mode: print formatted output to stdout
+# ---------------------------------------------------------------------------
 if [ -n "$TEST_MODE" ]; then
     case "$TEST_MODE" in
         i3status)
-            if [ -n "$I3_FMT" ]; then
-                printf '%s\n' "$I3_FMT"
+            if [ -n "$EV_TYPE" ]; then
+                local_cfg_suffix=""
+                if [ "$CFG_ERROR" = "true" ] && [ -n "$EV_TYPE" ]; then
+                    local_cfg_suffix='<span background="#dc322f" foreground="#ffffff"> CfgErr </span>'
+                fi
+                printf '<span background="%s" foreground="#ffffff">  %s  </span>%s\n' \
+                    "$COLOR" "$TEXT" "$local_cfg_suffix"
             else
                 printf '(idle)\n'
             fi
             ;;
         tmux)
-            if [ -n "$TMUX_FMT" ]; then
-                printf '%s\n' "$TMUX_FMT"
+            if [ -n "$EV_TYPE" ]; then
+                local_prefix=""
+                case "$EV_TYPE" in confirming) local_prefix=" ▶" ;; esac
+                local_cfg_suffix=""
+                if [ "$CFG_ERROR" = "true" ]; then
+                    local_cfg_suffix="#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]"
+                fi
+                printf '#[bg=%s,fg=#ffffff,bold]%s %s #[default]%s\n' \
+                    "$COLOR" "$local_prefix" "$TEXT" "$local_cfg_suffix"
             else
                 printf '(empty)\n'
             fi
@@ -217,99 +301,65 @@ if [ -n "$TEST_MODE" ]; then
     fi
 fi
 
-# Live mode: update i3status file + tmux option, refresh
+# ---------------------------------------------------------------------------
+# Live mode: render + manage decay timers
+# ---------------------------------------------------------------------------
 
-# Kill any existing decay timer
+# Kill any existing decay timers
 if [ -f "$DECAY_PID" ]; then
     kill "$(cat "$DECAY_PID")" 2>/dev/null
     rm -f "$DECAY_PID"
 fi
-
-# Kill any existing config error decay timer
 if [ -f "$CFG_DECAY_PID" ]; then
     kill "$(cat "$CFG_DECAY_PID")" 2>/dev/null
     rm -f "$CFG_DECAY_PID"
 fi
 
-# Render i3status (pango markup file, watched by i3status-rs)
-if [ -n "$I3_FMT" ]; then
-    printf '%s' "$I3_FMT" > "$I3STATUS"
+# Render the current state
+if [ -n "$EV_TYPE" ]; then
+    render_notify
 elif $CFG_ERROR; then
-    # No event — show persistent CfgErr indicator
-    printf '<span background="#dc322f" foreground="#ffffff"> CfgErr </span>' > "$I3STATUS"
+    render_clear
 else
-    : > "$I3STATUS"
+    render_clear
 fi
 
-# Set tmux user option (instant, no caching)
-if [ -z "$TMUX_FMT" ] && $CFG_ERROR; then
-    TMUX_FMT="#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]"
-fi
-tmux set -g @ssh_ag_status "$TMUX_FMT" 2>/dev/null || true
-tmux refresh-client -S 2>/dev/null || true
-
-# Decay timers — schedule notification clearing after a delay
-#
-# Config reload: 3s for success, 60s for error (via cfg decay)
-# Sign events: varies by outcome (see below)
-# Confirming: no decay (persists until resolved)
-#
-# After decay: i3status shows (S: HH:MM:SS) with red D for denied,
-# tmux clears (or shows CfgErr if error active).
-
-# Config error decay: after 60s, transition from prominent to persistent indicator
+# ---------------------------------------------------------------------------
+# Decay timers
+# ---------------------------------------------------------------------------
+# Config error decay: after 60s, transition from prominent to persistent
 if $CFG_ERROR_FRESH && [ "$STATE" != "reloaded" ]; then
     remaining=$(( 60 - cfg_age ))
     (
         sleep "$remaining"
         if [ -f "$CFG_ERROR_FILE" ]; then
-            printf '<span background="#dc322f" foreground="#ffffff"> CfgErr </span>' > "$I3STATUS"
-            tmux set -g @ssh_ag_status "#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]" 2>/dev/null || true
-            tmux refresh-client -S 2>/dev/null || true
+            CFG_ERROR=true render_clear
         fi
         rm -f "$CFG_DECAY_PID"
     ) &
     echo $! > "$CFG_DECAY_PID"
 fi
 
-# Reload success: 3s decay, reload error: 60s decay (handled by cfg decay above)
+# Reload: 3s decay for success, 60s for error
 if [ "$EV_TYPE" = "reloaded" ]; then
     (
         sleep 3
-        : > "$I3STATUS"
-        tmux set -g @ssh_ag_status "" 2>/dev/null || true
-        tmux refresh-client -S 2>/dev/null || true
+        CFG_ERROR=false render_clear
         rm -f "$DECAY_PID"
     ) &
     echo $! > "$DECAY_PID"
 elif [ "$EV_TYPE" = "reload-error" ]; then
     (
         sleep 60
-        if [ -f "$CFG_ERROR_FILE" ]; then
-            printf '<span background="#dc322f" foreground="#ffffff"> CfgErr </span>' > "$I3STATUS"
-            tmux set -g @ssh_ag_status "#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]" 2>/dev/null || true
-        else
-            : > "$I3STATUS"
-            tmux set -g @ssh_ag_status "" 2>/dev/null || true
-        fi
-        tmux refresh-client -S 2>/dev/null || true
+        CFG_ERROR=$( [ -f "$CFG_ERROR_FILE" ] && echo true || echo false )
+        render_clear
         rm -f "$DECAY_PID"
     ) &
     echo $! > "$DECAY_PID"
 fi
 
-# For idle results (blue/red), schedule a decay timer.
-# Timeout varies by outcome:
-#   auto allow    → 5s   (routine, quick fade)
-#   confirmed     → 2s   (user just interacted, already aware)
-#   auto deny     → 10s  (unexpected, needs attention)
-#   deny/missing  → 20s  (no confirm path available, needs investigation)
-# After decay: tmux shows CfgErr if error active, i3status shows persistent
-# (S: HH:MM:SS) with red D suffix for denied, CfgErr if error active.
-# Confirming state persists until resolved — no decay.
-# Fresh config error with no sign event uses its own 60s decay above.
+# Idle results: decay after variable timeout
 if [ "$STATE" = "idle" ] && [ -n "$EV_TYPE" ]; then
-    # Extract HH:MM:SS from timestamp (format: 2006-01-02T15:04:05)
     DECAY_TIME=""
     if [ -n "$PREV_TIMESTAMP" ]; then
         DECAY_TIME="${PREV_TIMESTAMP#*T}"
@@ -331,27 +381,8 @@ if [ "$STATE" = "idle" ] && [ -n "$EV_TYPE" ]; then
     esac
     (
         sleep "$DECAY_SECS"
-        # Check for config error at decay time (may have changed)
-        cfg_err_i3=""
-        cfg_err_tmux=""
-        if [ -f "$CFG_ERROR_FILE" ]; then
-            cfg_err_i3=' <span background="#dc322f" foreground="#ffffff"> CfgErr </span>'
-            cfg_err_tmux="#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]"
-        fi
-        # Build persistent i3status indicator
-        if [ -n "$DECAY_TIME" ]; then
-            if [ "$DECAY_DENIED" = "true" ]; then
-                printf '(S: %s <span foreground="#dc322f">D</span>)%s' "$DECAY_TIME" "$cfg_err_i3" > "$I3STATUS"
-            else
-                printf '(S: %s)%s' "$DECAY_TIME" "$cfg_err_i3" > "$I3STATUS"
-            fi
-        elif [ -n "$cfg_err_i3" ]; then
-            printf '<span background="#dc322f" foreground="#ffffff"> CfgErr </span>' > "$I3STATUS"
-        else
-            : > "$I3STATUS"
-        fi
-        tmux set -g @ssh_ag_status "$cfg_err_tmux" 2>/dev/null || true
-        tmux refresh-client -S 2>/dev/null || true
+        CFG_ERROR=$( [ -f "$CFG_ERROR_FILE" ] && echo true || echo false )
+        render_decay
         rm -f "$DECAY_PID"
     ) &
     echo $! > "$DECAY_PID"
