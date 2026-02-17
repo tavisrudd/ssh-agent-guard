@@ -26,6 +26,7 @@ type ProxyAgent struct {
 	confirmCfg *ConfirmConfig
 	session    *SessionBindInfo // most recent session-bind on this connection
 	ctx        context.Context  // cancelled when client connection closes
+	signCount  int              // number of sign requests on this connection
 }
 
 var errNotPermitted = errors.New("operation not permitted through proxy")
@@ -45,6 +46,7 @@ func (p *ProxyAgent) List() ([]*agent.Key, error) {
 // Since we implement ExtendedAgent, ServeAgent calls SignWithFlags instead,
 // but we implement Sign for interface completeness.
 func (p *ProxyAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
+	p.signCount++
 	result := p.evalAndConfirm(key)
 	if result.Action == Deny {
 		return nil, errNotPermitted
@@ -55,6 +57,7 @@ func (p *ProxyAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error
 // SignWithFlags is the primary signing path — ServeAgent calls this for
 // any ExtendedAgent when processing SSH_AGENTC_SIGN_REQUEST.
 func (p *ProxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
+	p.signCount++
 	result := p.evalAndConfirm(key)
 	if result.Action == Deny {
 		return nil, errNotPermitted
@@ -68,13 +71,18 @@ func (p *ProxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.S
 //   - No display + YubiKey → PIN via tmux popup ("pin")
 //   - No display + no YubiKey → deny ("missing")
 func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey) EvalResult {
-	result := p.policy.Evaluate(p.caller, p.session, ssh.FingerprintSHA256(key))
+	keyFP := ssh.FingerprintSHA256(key)
+	result := p.policy.Evaluate(p.caller, p.session, keyFP)
 
 	// Update status bar immediately
 	p.logger.UpdateSignStatus(p.caller, key, p.session, result)
 
 	if result.Action != Confirm {
-		p.logger.LogSign(p.caller, key, p.session, result)
+		var forensics *DenyForensics
+		if result.Action == Deny {
+			forensics = collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount)
+		}
+		p.logger.LogSign(p.caller, key, p.session, result, forensics)
 		return result
 	}
 
@@ -87,7 +95,8 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey) EvalResult {
 				n-1, max, p.caller.Name, dest)
 			result.Action = Deny
 			result.ConfirmMethod = "rate-limited"
-			p.logger.LogSign(p.caller, key, p.session, result)
+			forensics := collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount)
+			p.logger.LogSign(p.caller, key, p.session, result, forensics)
 			return result
 		}
 		defer pendingConfirms.Add(-1)
@@ -131,7 +140,12 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey) EvalResult {
 	} else {
 		result.Action = Deny
 	}
-	p.logger.LogSign(p.caller, key, p.session, result)
+
+	var forensics *DenyForensics
+	if result.Action == Deny {
+		forensics = collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount)
+	}
+	p.logger.LogSign(p.caller, key, p.session, result, forensics)
 	return result
 }
 
@@ -140,27 +154,27 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey) EvalResult {
 // Keys are managed directly on gpg-agent (via smartcard/scdaemon).
 
 func (p *ProxyAgent) Add(key agent.AddedKey) error {
-	p.logger.LogMutation(p.caller, "add")
+	p.logger.LogMutation(p.caller, "add", collectMutationForensics(p.caller))
 	return errNotPermitted
 }
 
 func (p *ProxyAgent) Remove(key ssh.PublicKey) error {
-	p.logger.LogMutation(p.caller, "remove")
+	p.logger.LogMutation(p.caller, "remove", collectMutationForensics(p.caller))
 	return errNotPermitted
 }
 
 func (p *ProxyAgent) RemoveAll() error {
-	p.logger.LogMutation(p.caller, "remove-all")
+	p.logger.LogMutation(p.caller, "remove-all", collectMutationForensics(p.caller))
 	return errNotPermitted
 }
 
 func (p *ProxyAgent) Lock(passphrase []byte) error {
-	p.logger.LogMutation(p.caller, "lock")
+	p.logger.LogMutation(p.caller, "lock", collectMutationForensics(p.caller))
 	return errNotPermitted
 }
 
 func (p *ProxyAgent) Unlock(passphrase []byte) error {
-	p.logger.LogMutation(p.caller, "unlock")
+	p.logger.LogMutation(p.caller, "unlock", collectMutationForensics(p.caller))
 	return errNotPermitted
 }
 

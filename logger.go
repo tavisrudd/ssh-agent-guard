@@ -20,6 +20,9 @@ type logEvent struct {
 	Trigger                   string            `yaml:"trigger"`
 	ProcessName               string            `yaml:"process_name"`
 	LocalPID                  int32             `yaml:"local_pid"`
+	UID                       uint32            `yaml:"uid,omitempty"`
+	GID                       uint32            `yaml:"gid,omitempty"`
+	ExePath                   string            `yaml:"exe_path,omitempty"`
 	TmuxWindow                string            `yaml:"tmux_window,omitempty"`
 	KeyFingerprint            string            `yaml:"key_fingerprint,omitempty"`
 	SSHDest                   string            `yaml:"ssh_dest,omitempty"`
@@ -38,6 +41,7 @@ type logEvent struct {
 	ConfigSHA256              string            `yaml:"config_sha256,omitempty"`
 	Env                       map[string]string `yaml:"env,omitempty"`
 	LocalProcTree             []logAncestor     `yaml:"local_proc_tree,omitempty"`
+	Forensics                 *DenyForensics    `yaml:"forensics,omitempty"`
 }
 
 type logAncestor struct {
@@ -127,7 +131,7 @@ func SignDest(ctx *CallerContext, session *SessionBindInfo) string {
 }
 
 // buildSignEvent creates a logEvent for a sign operation.
-func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result *EvalResult, logPath string) *logEvent {
+func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result *EvalResult, logPath string, forensics *DenyForensics) *logEvent {
 	fingerprint := ssh.FingerprintSHA256(key)
 	dest := SignDest(ctx, session)
 
@@ -145,6 +149,9 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 		Trigger:                   "sign",
 		ProcessName:               ctx.Name,
 		LocalPID:                  ctx.PID,
+		UID:                       ctx.UID,
+		GID:                       ctx.GID,
+		ExePath:                   ctx.ExePath,
 		TmuxWindow:                ctx.TmuxWindow,
 		KeyFingerprint:            fingerprint,
 		SSHDest:                   dest,
@@ -159,6 +166,7 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 		ConfirmMethod:             result.ConfirmMethod,
 		LogFile:                   logPath,
 		Env:                       ctx.Env,
+		Forensics:                 forensics,
 	}
 
 	if session != nil {
@@ -178,12 +186,15 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 }
 
 // buildMutationEvent creates a logEvent for a blocked mutation operation.
-func buildMutationEvent(ts time.Time, ctx *CallerContext, op string, logPath string) *logEvent {
+func buildMutationEvent(ts time.Time, ctx *CallerContext, op string, logPath string, forensics *DenyForensics) *logEvent {
 	ev := &logEvent{
 		Timestamp:                 ts.Format("2006-01-02T15:04:05"),
 		Trigger:                   op,
 		ProcessName:               ctx.Name,
 		LocalPID:                  ctx.PID,
+		UID:                       ctx.UID,
+		GID:                       ctx.GID,
+		ExePath:                   ctx.ExePath,
 		LocalCWD:                  ctx.CWD,
 		IsForwardedSession:        ctx.IsForwardedSession,
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
@@ -191,6 +202,7 @@ func buildMutationEvent(ts time.Time, ctx *CallerContext, op string, logPath str
 		PIDNamespace:              ctx.PIDNamespace,
 		Decision:                  "deny",
 		LogFile:                   logPath,
+		Forensics:                 forensics,
 	}
 
 	for _, a := range ctx.Ancestry {
@@ -237,7 +249,7 @@ func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *S
 	}
 
 	now := time.Now()
-	pending := buildSignEvent(now, ctx, key, session, &result, "")
+	pending := buildSignEvent(now, ctx, key, session, &result, "", nil)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -253,7 +265,8 @@ func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *S
 }
 
 // LogSign writes the YAML log file and updates current.yaml with full details.
-func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result EvalResult) {
+// forensics is optional — non-nil only for denied requests.
+func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result EvalResult, forensics *DenyForensics) {
 	now := time.Now()
 	fingerprint := ssh.FingerprintSHA256(key)
 	dest := SignDest(ctx, session)
@@ -279,7 +292,7 @@ func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *Session
 	// NOTE: ConfigSHA256 is read here at log-write time, not at evaluation time.
 	// If a config reload occurs during a long confirmation wait (e.g. YubiKey touch),
 	// the sha may be one version newer than the policy that evaluated the request.
-	ev := buildSignEvent(now, ctx, key, session, &result, "")
+	ev := buildSignEvent(now, ctx, key, session, &result, "", forensics)
 	if l.policy != nil {
 		ev.ConfigSHA256 = l.policy.ConfigSHA256()
 	}
@@ -309,14 +322,15 @@ func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *Session
 }
 
 // LogMutation logs a blocked key management operation.
-func (l *Logger) LogMutation(ctx *CallerContext, op string) {
+// forensics is optional — provides additional context for the deny.
+func (l *Logger) LogMutation(ctx *CallerContext, op string, forensics *DenyForensics) {
 	now := time.Now()
 
 	filename := fmt.Sprintf("%s-%s.yaml", now.Format("20060102-150405"), ctx.Name)
 	logPath := filepath.Join(l.stateDir, filename)
 
 	// Build event and write log file
-	ev := buildMutationEvent(now, ctx, op, "")
+	ev := buildMutationEvent(now, ctx, op, "", forensics)
 	if l.policy != nil {
 		ev.ConfigSHA256 = l.policy.ConfigSHA256()
 	}

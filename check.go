@@ -16,6 +16,7 @@ type checkOutput struct {
 type checkContext struct {
 	LocalPID                  int32             `yaml:"local_pid"`
 	ProcessName               string            `yaml:"process_name"`
+	ExePath                   string            `yaml:"exe_path,omitempty"`
 	Cmdline                   string            `yaml:"cmdline"`
 	LocalCWD                  string            `yaml:"local_cwd"`
 	IsForwardedSession        bool              `yaml:"is_forwarded_session"`
@@ -37,16 +38,9 @@ type checkAncestor struct {
 }
 
 type checkPolicyEvaluation struct {
-	PolicyFile string      `yaml:"policy_file"`
-	Key        *string     `yaml:"key"` // nil → null
-	Rules      []checkRule `yaml:"rules"`
-}
-
-type checkRule struct {
-	Name       string   `yaml:"name"`
-	Action     string   `yaml:"action"`
-	Matched    bool     `yaml:"matched"`
-	Mismatches []string `yaml:"mismatches,omitempty"`
+	PolicyFile string             `yaml:"policy_file"`
+	Key        *string            `yaml:"key"` // nil → null
+	Rules      []RuleCheckResult  `yaml:"rules"`
 }
 
 type checkResult struct {
@@ -73,6 +67,7 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 	out.Context = checkContext{
 		LocalPID:                  ctx.PID,
 		ProcessName:               ctx.Name,
+		ExePath:                   ctx.ExePath,
 		Cmdline:                   ctx.Cmdline,
 		LocalCWD:                  ctx.CWD,
 		IsForwardedSession:        ctx.IsForwardedSession,
@@ -102,14 +97,7 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 	policy, _ := NewPolicy(policyPath)
 	results := policy.EvaluateVerbose(ctx, nil, keyFingerprint)
 
-	for _, r := range results {
-		out.PolicyEvaluation.Rules = append(out.PolicyEvaluation.Rules, checkRule{
-			Name:       r.Name,
-			Action:     r.Action,
-			Matched:    r.Matched,
-			Mismatches: r.Mismatches,
-		})
-	}
+	out.PolicyEvaluation.Rules = results
 
 	// Build result section
 	result := policy.Evaluate(ctx, nil, keyFingerprint)

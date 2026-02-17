@@ -786,11 +786,12 @@ func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, ke
 }
 
 // RuleCheckResult holds the result of evaluating a single rule in verbose mode.
+// Used by --check output and deny forensics logs.
 type RuleCheckResult struct {
-	Name       string
-	Action     string
-	Matched    bool
-	Mismatches []string // field names that didn't match
+	Name       string   `yaml:"name"`
+	Action     string   `yaml:"action"`
+	Matched    bool     `yaml:"matched"`
+	Mismatches []string `yaml:"mismatches,omitempty"`
 }
 
 // EvaluateVerbose evaluates all rules and returns detailed match info for each.

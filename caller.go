@@ -162,6 +162,7 @@ type CallerContext struct {
 	UID        uint32
 	GID        uint32
 	Name       string            // process name (nix-unwrapped)
+	ExePath    string            // resolved executable path (/proc/$pid/exe)
 	Cmdline    string            // full command line
 	CWD        string            // working directory
 	Env        map[string]string // selected environment variables
@@ -220,6 +221,9 @@ func getCallerContextFromPID(pid int32) *CallerContext {
 	}
 
 	ctx.Name = processName(ctx.Cmdline)
+
+	// Resolved executable path
+	ctx.ExePath = readExePath(ctx.PID)
 
 	// Working directory
 	if target, err := os.Readlink(filepath.Join(procDir, "cwd")); err == nil {
@@ -454,6 +458,82 @@ func detectPIDNamespace(pid int32) (namespace string, isContainer bool) {
 		return "", false
 	}
 	return peerNS, selfNS != peerNS
+}
+
+// readExePath returns the resolved executable path via /proc/$pid/exe.
+// Platform-specific: moves to caller_{linux,darwin}.go with the rest.
+func readExePath(pid int32) string {
+	target, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return ""
+	}
+	return target
+}
+
+// bootTime caches the system boot time from /proc/stat (never changes).
+var bootTime struct {
+	once sync.Once
+	time time.Time
+}
+
+func getBootTime() time.Time {
+	bootTime.once.Do(func() {
+		data, err := os.ReadFile("/proc/stat")
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "btime ") {
+				sec, err := strconv.ParseInt(strings.TrimPrefix(line, "btime "), 10, 64)
+				if err == nil {
+					bootTime.time = time.Unix(sec, 0)
+				}
+				return
+			}
+		}
+	})
+	return bootTime.time
+}
+
+// readProcessAge returns how long the process has been running.
+// Reads starttime (field 22) from /proc/$pid/stat and computes wall time.
+// Platform-specific: moves to caller_{linux,darwin}.go with the rest.
+func readProcessAge(pid int32) time.Duration {
+	bt := getBootTime()
+	if bt.IsZero() {
+		return 0
+	}
+
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0
+	}
+	s := string(data)
+
+	// /proc/PID/stat format: pid (comm) state ppid ... starttime(field 22) ...
+	// Fields after the closing paren (0-indexed): state=0 ppid=1 ... starttime=19
+	closeParen := strings.LastIndex(s, ")")
+	if closeParen < 0 || closeParen+2 >= len(s) {
+		return 0
+	}
+	fields := strings.Fields(s[closeParen+2:])
+	if len(fields) < 20 {
+		return 0
+	}
+
+	startTicks, err := strconv.ParseInt(fields[19], 10, 64)
+	if err != nil {
+		return 0
+	}
+
+	// CLK_TCK is 100 on virtually all Linux systems
+	const clockTicksPerSec = 100
+	startTime := bt.Add(time.Duration(startTicks) * time.Second / clockTicksPerSec)
+	age := time.Since(startTime)
+	if age < 0 {
+		return 0
+	}
+	return age
 }
 
 // extractSSHDest parses an ssh command line for the destination argument.
