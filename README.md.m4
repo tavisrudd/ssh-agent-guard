@@ -312,7 +312,10 @@ systemctl --user enable --now ssh-agent-guard
 - **ssh-ag-deny** — cancel any pending confirmation (bind to a
   tmux/sway keybinding)
 - **ssh-ag-render-status** — status bar renderer for i3status-rs
-  (pango markup) and tmux (user option `@ssh_ag_status`)
+  (pango markup) and tmux (user option `@ssh_ag_status`).
+  Replaceable — see [status rendering](docs/status-rendering.md)
+  for the interface contract and examples for other targets
+  (desktop notifications, Waybar, polling-based)
 
 ## Requirements
 

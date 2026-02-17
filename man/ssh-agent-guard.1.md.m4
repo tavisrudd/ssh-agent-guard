@@ -158,6 +158,8 @@ Each sign or mutation event produces a timestamped YAML file.
 : Live status file consumed by status bar renderers (i3status-rs, tmux).
 Contains current state (idle/confirming), pending request details, and
 previous event.
+See *docs/status-rendering.md* in the source repository for the full
+schema and instructions for writing a custom renderer.
 
 **~/.local/state/ssh-ag/config_error.yaml**
 : Written when the policy file fails to parse; removed on successful load.
