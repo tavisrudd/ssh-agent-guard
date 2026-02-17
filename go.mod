@@ -2,6 +2,8 @@ module github.com/tavisrudd/ssh-agent-guard
 
 go 1.24.0
 
+toolchain go1.25.5
+
 require (
 	github.com/fsnotify/fsnotify v1.9.0
 	golang.org/x/crypto v0.48.0
