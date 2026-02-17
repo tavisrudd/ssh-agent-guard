@@ -239,8 +239,11 @@ destinations:
 
 ### Container policies
 
-Containers connecting via bind-mounted sockets have incomplete
-caller identity.  Default to deny:
+`is_in_container` is true when the caller's PID namespace differs
+from the proxy's.  This matters because the proxy identifies callers
+via `/proc/$pid` — when PID namespaces differ, those reads may
+return empty or wrong data, making the caller's identity (name,
+command, ancestry) untrustworthy.  Default to deny:
 
 ```yaml
   - name: container-deny

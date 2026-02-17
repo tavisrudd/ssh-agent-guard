@@ -135,8 +135,11 @@ flag-aware argument parsing.
 in ancestry.
 
 **Container**
-: Detected by comparing PID namespaces between proxy and caller via
-*/proc/self/ns/pid*.
+: Detected by comparing PID namespaces between proxy and caller.
+All six Linux namespaces (pid, mnt, net, user, uts, cgroup) are
+read and any mismatches are logged, but **is_in_container** is
+specifically tied to PID namespace mismatch — that's the namespace
+that determines whether */proc/$pid* reads are trustworthy.
 
 **Forwarded agent**
 : Detected via the **session-bind@openssh.com** agent protocol extension

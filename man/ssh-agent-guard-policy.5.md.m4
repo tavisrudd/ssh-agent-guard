@@ -217,17 +217,27 @@ Allows matching specific keys without specifying the full fingerprint.
 **cwd:** *pattern*
 : Glob or regex against the caller's working directory.
 
+**cgroup:** *pattern*
+: Glob or regex against the caller's cgroup path (from
+*/proc/$pid/cgroup*).  On cgroup v2, this is the path after *0::*
+(e.g., */user.slice/user-1000.slice/session-1.scope*).  On cgroup v1,
+the full first hierarchy line is returned including controller prefix
+(e.g., *10:devices:/docker/abc123*).  Patterns like *\*docker\** match
+either format.
+
 **tmux_window:** *pattern*
 : Glob or regex against the tmux session:window name (*main:claude*).
 Resolved from **TMUX_PANE** in the caller's environment.
 
 **is_in_container:** *true* | *false*
 : Boolean.
-Whether the caller is in a different PID namespace from the proxy
-(e.g., a container).
-Container callers have incomplete identity — process name, command
-line, and ancestry may be unavailable or refer to wrong processes
-unless the container shares the host PID namespace (**--pid=host**).
+Whether the caller's PID namespace differs from the proxy's.  When
+true, the proxy cannot fully trust */proc/$pid* reads — the caller's
+process name, command line, and ancestry may be unavailable or refer
+to wrong processes.  This is specifically a PID namespace check; other
+namespace mismatches (mnt, net, user, uts, cgroup) are recorded in
+**namespace_mismatches** for forensics but do not affect this field.
+Containers share the host PID namespace with **--pid=host**.
 
 **is_coding_agent:** *true* | *false*
 : Boolean.

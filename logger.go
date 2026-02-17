@@ -34,7 +34,7 @@ type logEvent struct {
 	IsForwardedSession        bool              `yaml:"is_forwarded_session"`
 	ForwardedSessionHeuristic string            `yaml:"forwarded_session_heuristic"`
 	IsContainer               bool              `yaml:"is_container,omitempty"`
-	PIDNamespace              string            `yaml:"pid_namespace,omitempty"`
+	NamespaceMismatches       []string          `yaml:"namespace_mismatches,omitempty"`
 	IsCodingAgent             bool              `yaml:"is_coding_agent,omitempty"`
 	CodingAgentName           string            `yaml:"coding_agent_name,omitempty"`
 	Decision                  string            `yaml:"decision"`
@@ -164,7 +164,7 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 		IsForwardedSession:        ctx.IsForwardedSession,
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,
-		PIDNamespace:              ctx.PIDNamespace,
+		NamespaceMismatches:       ctx.NamespaceMismatches,
 		IsCodingAgent:             ctx.IsCodingAgent,
 		CodingAgentName:           ctx.CodingAgentName,
 		Decision:                  decision,
@@ -206,7 +206,7 @@ func buildMutationEvent(ts time.Time, ctx *CallerContext, op string, logPath str
 		IsForwardedSession:        ctx.IsForwardedSession,
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,
-		PIDNamespace:              ctx.PIDNamespace,
+		NamespaceMismatches:       ctx.NamespaceMismatches,
 		IsCodingAgent:             ctx.IsCodingAgent,
 		CodingAgentName:           ctx.CodingAgentName,
 		Decision:                  "deny",

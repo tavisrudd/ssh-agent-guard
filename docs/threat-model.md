@@ -55,11 +55,12 @@ authenticate as you — ssh-agent-guard closes that gap.
   large PID ranges (kernel.pid_max).
 - **Container callers with incomplete identity** — a container process
   with access to the socket (via bind mount) can connect, but its /proc
-  entries may be invisible or in a different PID namespace.  The proxy
-  detects PID namespace mismatches and marks such callers as
-  `container=true`, but the caller identity fields (name, command,
-  ancestry) may be unavailable.  Policy rules should default to deny or
-  confirm for container callers.
+  entries may be invisible or wrong when PID namespaces differ.  The
+  proxy reads all six Linux namespaces and records mismatches, but
+  `is_in_container` is specifically tied to PID namespace mismatch —
+  that's the namespace that affects `/proc` trust.  Caller identity
+  fields (name, command, ancestry) may be unavailable.  Policy rules
+  should default to deny or confirm for container callers.
 
 ### Without socket protection
 

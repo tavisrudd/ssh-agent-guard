@@ -23,7 +23,7 @@ type checkContext struct {
 	IsForwardedSession        bool              `yaml:"is_forwarded_session"`
 	ForwardedSessionHeuristic string            `yaml:"forwarded_session_heuristic"`
 	IsContainer               bool              `yaml:"is_container"`
-	PIDNamespace              string            `yaml:"pid_namespace,omitempty"`
+	NamespaceMismatches       []string          `yaml:"namespace_mismatches,omitempty"`
 	IsCodingAgent             bool              `yaml:"is_coding_agent"`
 	CodingAgentName           string            `yaml:"coding_agent_name,omitempty"`
 	TmuxWindow                string            `yaml:"tmux_window,omitempty"`
@@ -79,7 +79,7 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 		IsForwardedSession:        ctx.IsForwardedSession,
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,
-		PIDNamespace:              ctx.PIDNamespace,
+		NamespaceMismatches:       ctx.NamespaceMismatches,
 		IsCodingAgent:             ctx.IsCodingAgent,
 		CodingAgentName:           ctx.CodingAgentName,
 		TmuxWindow:                ctx.TmuxWindow,

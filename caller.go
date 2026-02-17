@@ -176,8 +176,9 @@ type CallerContext struct {
 	CodingAgentName           string // which agent matched (e.g. "claude", "cursor")
 	IsForwardedSession        bool   // detected via ForwardedSessionHeuristic
 	ForwardedSessionHeuristic string // how IsForwardedSession was determined
-	IsContainer       bool   // caller is in a different PID namespace
-	PIDNamespace      string // PID namespace inode (e.g. "pid:[4026531836]")
+	Namespaces          map[string]string // namespace inodes (key=ns name, value=inode)
+	NamespaceMismatches []string          // namespaces that differ from proxy's own
+	IsContainer         bool              // PID namespace differs (caller identity untrusted)
 }
 
 type AncestorInfo struct {
@@ -274,8 +275,8 @@ func getCallerContextFromPID(pid int32) *CallerContext {
 	// Detect forwarded session: sshd in ancestry or SSH_CONNECTION in env
 	ctx.IsForwardedSession = detectForwardedSession(ctx)
 
-	// Detect PID namespace mismatch (container/namespace isolation)
-	ctx.PIDNamespace, ctx.IsContainer = detectPIDNamespace(ctx.PID)
+	// Detect namespace mismatches (container/namespace isolation)
+	ctx.Namespaces, ctx.NamespaceMismatches, ctx.IsContainer = detectNamespaces(ctx.PID)
 
 	return ctx
 }
@@ -458,29 +459,70 @@ func findSSHDest(ctx *CallerContext) string {
 	return ""
 }
 
-// detectPIDNamespace checks if the caller is in a different PID namespace.
-// Returns the caller's PID namespace identifier and whether it differs from ours.
-//
-// When a container process connects via a bind-mounted SSH_AUTH_SOCK, SO_PEERCRED
-// returns the PID translated to the receiver's namespace (correct on Linux 3.x+),
-// but /proc reads may return empty or wrong data if the namespaces differ in ways
-// that affect /proc visibility. The namespace check lets policy rules distinguish
-// container callers and apply stricter defaults.
-func detectPIDNamespace(pid int32) (namespace string, isContainer bool) {
-	selfNS, err := os.Readlink("/proc/self/ns/pid")
-	if err != nil {
-		return "", false
-	}
-	peerNS, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", pid))
-	if err != nil {
-		// Can't read peer namespace — might be permissions or process exited.
-		// If /proc/$pid exists but ns/pid is unreadable, likely a namespace issue.
-		if _, statErr := os.Stat(fmt.Sprintf("/proc/%d", pid)); statErr == nil {
-			return "unknown", true
+// selfNamespaces caches the proxy's own namespace inodes (they never change).
+var selfNamespaces struct {
+	once sync.Once
+	ns   map[string]string
+}
+
+// nsNames are the Linux namespaces to compare for container detection.
+var nsNames = []string{"pid", "mnt", "net", "user", "uts", "cgroup"}
+
+func getSelfNamespaces() map[string]string {
+	selfNamespaces.once.Do(func() {
+		selfNamespaces.ns = make(map[string]string, len(nsNames))
+		for _, name := range nsNames {
+			if target, err := os.Readlink("/proc/self/ns/" + name); err == nil {
+				selfNamespaces.ns[name] = target
+			}
 		}
-		return "", false
+	})
+	return selfNamespaces.ns
+}
+
+// detectNamespaces reads all relevant namespaces for the peer process and
+// compares them against the proxy's own. Returns the peer's namespace map,
+// a list of mismatched namespace names, and whether the PID namespace differs.
+//
+// IsContainer is derived from PID namespace mismatch only. When the caller
+// is in a different PID namespace, /proc reads may return empty or wrong data
+// because the PID from SO_PEERCRED is translated across namespaces. Other
+// namespace mismatches (mnt, net, user, uts, cgroup) don't affect /proc
+// visibility and are captured in NamespaceMismatches for forensics only.
+func detectNamespaces(pid int32) (namespaces map[string]string, mismatches []string, isContainer bool) {
+	selfNS := getSelfNamespaces()
+	if len(selfNS) == 0 {
+		return nil, nil, false
 	}
-	return peerNS, selfNS != peerNS
+
+	// Check process existence first to distinguish "exited" from "ns unreadable"
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
+		return nil, nil, false
+	}
+
+	peerNS := make(map[string]string, len(nsNames))
+	pidMismatch := false
+	for _, name := range nsNames {
+		target, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/%s", pid, name))
+		if err != nil {
+			continue
+		}
+		peerNS[name] = target
+		if selfNS[name] != "" && selfNS[name] != target {
+			mismatches = append(mismatches, name)
+			if name == "pid" {
+				pidMismatch = true
+			}
+		}
+	}
+
+	// If we couldn't read any ns files despite the process existing,
+	// assume a namespace issue (conservative — treat as container)
+	if len(peerNS) == 0 {
+		return nil, []string{"unknown"}, true
+	}
+
+	return peerNS, mismatches, pidMismatch
 }
 
 // readExePath returns the resolved executable path via /proc/$pid/exe.

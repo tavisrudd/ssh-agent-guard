@@ -34,7 +34,8 @@ With the kernel-verified PID, the proxy reads:
 | `/proc/$pid/environ` | Environment       | Selected variables only (see below) |
 | `/proc/$pid/stat`    | Parent PID        | Used for ancestry walking           |
 | `/proc/$pid/stat`    | Process start time| Field 22; used for process age      |
-| `/proc/$pid/ns/pid`  | PID namespace     | Compared to proxy's own namespace   |
+| `/proc/$pid/ns/*`    | Namespaces        | All 6 compared to proxy's own       |
+| `/proc/$pid/cgroup`  | Cgroup path       | Parsed for cgroup v2 path           |
 
 ### Environment capture
 
@@ -160,16 +161,65 @@ to resolve the human-readable window name.  This enables the
   action: confirm
 ```
 
-## Container detection
+## Namespace and container detection
 
-The proxy compares its own PID namespace (`/proc/self/ns/pid`) with
-the caller's (`/proc/$pid/ns/pid`).  If they differ, the caller is
-marked `is_in_container: true`.
+The proxy reads all six Linux namespaces (`pid`, `mnt`, `net`,
+`user`, `uts`, `cgroup`) for each caller via `/proc/$pid/ns/*` and
+compares them against its own (cached at startup).  Any mismatches
+are recorded in `namespace_mismatches` for logging and forensics.
 
-Container callers have incomplete identity: their `/proc` entries
-may be invisible or refer to wrong PIDs unless the container shares
-the host PID namespace (`--pid=host`).  Policy rules should default
-to deny or confirm for container callers.
+**`is_in_container` is derived from PID namespace mismatch only.**
+When the caller is in a different PID namespace, the proxy cannot
+fully trust `/proc/$pid` reads — the PID obtained via SO_PEERCRED
+is translated across namespaces, and the caller's `/proc` entries
+may be invisible or refer to wrong processes.  Other namespace
+mismatches (mnt, net, user, uts, cgroup) do not affect `/proc`
+visibility and are informational only.
+
+Policy rules should default to deny or confirm for container
+callers, since their identity fields (name, command, ancestry)
+may be unavailable or incorrect.
+
+`namespace_mismatches` appears in `--check` output and log events.
+It lists which of the six namespaces differ (e.g. `[pid, net, user]`
+for a sandboxed browser, or `[pid, mnt, net, user, uts, cgroup]`
+for a fully isolated container).  When no namespaces differ, the
+field is omitted entirely.  The raw namespace inodes are not
+logged — only which namespaces mismatch.
+
+Example: a Chromium zygote process uses pid, net, and user namespace
+sandboxing.  `--check --pid <chromium-pid>` shows:
+
+```yaml
+context:
+  local_pid: 208823
+  process_name: chromium
+  exe_path: /nix/store/...-chromium-unwrapped-.../chromium
+  cmdline: .../chromium --type=zygote --change-stack-guard-on-fork=enable
+  local_cwd: /proc/208824/fdinfo
+  cgroup: /user.slice/user-1000.slice/session-17.scope
+  is_forwarded_session: false
+  is_container: true
+  namespace_mismatches:
+    - pid
+    - net
+    - user
+  local_proc_tree:
+    - pid: 208823
+      name: chromium
+      cmd: .../chromium --type=zygote ...
+    - pid: 208809
+      name: chromium
+      cmd: .../chromium
+    - pid: 208803
+      name: bash
+      cmd: bash /home/tavis/.config/sway/tavis-chromium
+```
+
+Here `is_in_container: true` because the PID namespace differs —
+the proxy cannot trust `/proc` reads for this caller.  The `net`
+and `user` mismatches are recorded for forensics but do not affect
+`is_in_container`.
 
 ## Timing and TOCTOU
 

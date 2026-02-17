@@ -162,8 +162,8 @@ func handleConnection(clientConn net.Conn, upstreamPath string, logger *Logger, 
 	caller := getCallerContext(clientConn)
 
 	if caller.IsContainer {
-		log.Printf("connect: %s (pid %d) from container (ns %s) — caller identity may be incomplete",
-			caller.Name, caller.PID, caller.PIDNamespace)
+		log.Printf("connect: %s (pid %d) from container (ns mismatches: %v) — caller identity may be incomplete",
+			caller.Name, caller.PID, caller.NamespaceMismatches)
 	} else if verbose {
 		log.Printf("connect: %s (pid %d) from %s", caller.Name, caller.PID, caller.CWD)
 	}

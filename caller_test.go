@@ -309,30 +309,37 @@ func TestParseCgroup(t *testing.T) {
 	}
 }
 
-func TestDetectPIDNamespace(t *testing.T) {
+func TestDetectNamespaces(t *testing.T) {
 	// Our own PID should be in our own namespace (not a container)
-	ns, isContainer := detectPIDNamespace(int32(os.Getpid()))
+	namespaces, mismatches, isContainer := detectNamespaces(int32(os.Getpid()))
 	if isContainer {
 		t.Error("own PID should not be detected as container")
 	}
-	if ns == "" {
-		t.Error("namespace should not be empty for own PID")
+	if len(mismatches) > 0 {
+		t.Errorf("own PID should have no mismatches, got %v", mismatches)
+	}
+	if len(namespaces) == 0 {
+		t.Error("namespaces should not be empty for own PID")
+	}
+	// Should have read at least pid namespace
+	if _, ok := namespaces["pid"]; !ok {
+		t.Error("pid namespace should be present")
 	}
 
 	// Non-existent PID should return empty, not container
-	ns, isContainer = detectPIDNamespace(999999999)
+	namespaces, mismatches, isContainer = detectNamespaces(999999999)
 	if isContainer {
 		t.Error("non-existent PID should not be detected as container")
 	}
-	if ns != "" {
-		t.Errorf("namespace for non-existent PID should be empty, got %q", ns)
+	if len(mismatches) > 0 {
+		t.Errorf("non-existent PID should have no mismatches, got %v", mismatches)
+	}
+	if len(namespaces) > 0 {
+		t.Errorf("non-existent PID should have no namespaces, got %v", namespaces)
 	}
 
-	// PID 1 (init) should be in the same namespace on a non-containerized host.
-	// In a test container with its own PID namespace, PID 1 IS in a different
-	// namespace from the test process, so we just verify no crash.
-	ns1, _ := detectPIDNamespace(1)
-	_ = ns1 // don't assert — depends on test environment
+	// PID 1 (init) — just verify no crash; results depend on test environment
+	_, _, _ = detectNamespaces(1)
 }
 
 func TestSignDest(t *testing.T) {
