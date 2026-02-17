@@ -80,8 +80,9 @@ A same-user process can spam sign requests that trigger confirmation
 prompts, degrading the user experience without gaining access (each
 confirmation is independently authenticated by nonce).  The proxy
 limits concurrent pending confirmations via `confirm.max_pending`
-(default: 3).  Requests beyond this limit are immediately denied.
-See the [policy guide](policy-guide.md#confirmation-rate-limiting)
+(default: 3).  Requests beyond this limit are immediately denied and
+logged with deny forensics (process age, sign request count, rule
+trace).  See the [policy guide](policy-guide.md#confirmation-rate-limiting)
 for configuration.
 
 ## Keep OpenSSH updated

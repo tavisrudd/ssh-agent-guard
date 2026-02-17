@@ -281,6 +281,7 @@ $ ssh-agent-guard --check
 context:
   process_name: bash
   cmdline: /bin/bash
+  exe_path: /usr/bin/bash
   local_cwd: /home/alice/src/myproject
   ...
 policy_evaluation:
@@ -315,7 +316,8 @@ confirm:
 
 This prevents a same-user process from flooding the confirmation UI
 with rapid sign requests.  Rate-limited denials are logged with
-`confirm_method: rate-limited` and appear in the journal as:
+`confirm_method: rate-limited`, include a `forensics` block (see
+below), and appear in the journal as:
 
 ```
 confirm: rate-limited (3/3 pending), denying npm → unknown
@@ -344,3 +346,37 @@ produce more than 2 concurrent sign requests.
 - **Log files are your friend.** Each signing event writes a YAML
   file to `~/.local/state/ssh-ag/` with full caller context.  Use
   these to discover what needs rules.
+
+## Deny forensics
+
+When a request is denied — whether by a deny rule, a declined
+confirmation, rate limiting, or a missing confirmation method — the
+log event includes an extra `forensics` block with additional context:
+
+- **sign_request_num** — which sign request on this connection
+  triggered the deny (1st? 15th?).
+- **process_age** — time since the caller process started.  A freshly
+  spawned process is more suspicious than a long-running shell.
+- **rule_trace** — the full rule evaluation showing each rule, whether
+  it matched, and specific mismatches (sign requests only; mutations
+  do not go through policy evaluation).
+
+This data is only collected on deny paths to avoid overhead on allowed
+requests.  Example:
+
+```yaml
+decision: deny
+rule: forwarded-unknown
+forensics:
+  sign_request_num: 1
+  process_age: 3s
+  rule_trace:
+    - name: git-hosts
+      action: allow
+      matched: false
+      mismatches:
+        - "ssh_dest: want \"git@github.com\", got \"suspect-host.example.com\""
+    - name: forwarded-unknown
+      action: deny
+      matched: true
+```

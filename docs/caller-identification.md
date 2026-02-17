@@ -28,10 +28,12 @@ With the kernel-verified PID, the proxy reads:
 
 | Source               | Field             | Notes                               |
 |----------------------|-------------------|-------------------------------------|
+| `/proc/$pid/exe`     | Executable path   | Symlink to binary on disk           |
 | `/proc/$pid/cmdline` | Command line      | Null-separated, joined with spaces  |
 | `/proc/$pid/cwd`     | Working directory | Symlink to actual path              |
 | `/proc/$pid/environ` | Environment       | Selected variables only (see below) |
 | `/proc/$pid/stat`    | Parent PID        | Used for ancestry walking           |
+| `/proc/$pid/stat`    | Process start time| Field 22; used for process age      |
 | `/proc/$pid/ns/pid`  | PID namespace     | Compared to proxy's own namespace   |
 
 ### Environment capture
@@ -45,6 +47,23 @@ Only a fixed set of environment variables are read, to limit exposure:
 
 These are used for policy matching (`env:` field) and forwarded
 session detection.
+
+### Executable path
+
+`/proc/$pid/exe` is a symlink to the actual binary on disk.  This
+catches cases where `argv[0]` has been spoofed — the exe path always
+reflects the real binary.  On NixOS, it distinguishes between store
+paths (e.g., `/nix/store/abc123-openssh-9.6p1/bin/ssh`).  The exe
+path appears in `--check` output and all log events as `exe_path`.
+
+### Process age
+
+On denied requests, the proxy computes the caller's process age from
+`/proc/$pid/stat` field 22 (start time in clock ticks) and the system
+boot time from `/proc/stat` (cached once via `sync.Once`).  A freshly
+spawned process making agent requests is more suspicious than a
+long-running shell.  Process age appears in the `forensics` block of
+deny log events only.
 
 ## Process name unwrapping
 

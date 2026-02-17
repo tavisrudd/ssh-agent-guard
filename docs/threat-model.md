@@ -22,8 +22,10 @@ authenticate as you — ssh-agent-guard closes that gap.
   unconditionally blocked.
 - **Silent key use** — without the proxy, any key operation is
   invisible.  The proxy logs every request with full caller context
-  (process name, command line, ancestry, working directory, environment)
-  to structured YAML files and journald.
+  (process name, command line, exe path, ancestry, working directory,
+  environment) to structured YAML files and journald.  Denied requests
+  include additional forensics: sign request count, process age, and
+  the full rule evaluation trace.
 
 ### What it does NOT protect against
 
@@ -63,7 +65,9 @@ authenticate as you — ssh-agent-guard closes that gap.
 
 Even without filesystem hardening, the proxy provides substantial value:
 
-- **Audit logging** of all signing operations with full caller context
+- **Audit logging** of all signing operations with full caller context,
+  plus deny forensics (process age, sign request count, rule trace) on
+  denied requests
 - **Physical confirmation** via YubiKey for sensitive operations
 - **Policy enforcement** for all software that uses `SSH_AUTH_SOCK`
   (ssh, git, rsync, and nearly all SSH clients)
