@@ -109,9 +109,16 @@ process:
 Nix wrapper names (*.foo-wrapped*) are unwrapped automatically.
 
 **Environment**
-: Selected variables from */proc/$pid/environ*:
-**SSH_CONNECTION**, **SSH_TTY**, **DISPLAY**, **WAYLAND_DISPLAY**,
-**TERM**, **TMUX_PANE**, **CLAUDECODE**.
+: Selected variables from */proc/$pid/environ*.
+Built-in: **SSH_CONNECTION**, **SSH_TTY**, **DISPLAY**,
+**WAYLAND_DISPLAY**, **TERM**, **TMUX_PANE**, **CLAUDECODE**.
+Additional variables from **capture_extra_env_vars**, **coding_agents**
+env keys, and rule **match.env** keys are captured automatically.
+
+**Coding agent**
+: Detected via configurable heuristics (env vars and ancestor process
+names).  Built-in: Claude, Cursor, Copilot, Aider, Windsurf, Amp, Pi.
+Extensible via the **coding_agents** policy section.
 
 **Ancestry**
 : Process tree walked via */proc/$pid/stat* up to 8 levels.

@@ -45,10 +45,9 @@ find operations that need rules.
 default_action: allow
 
 rules:
-  - name: ai-tools
+  - name: coding-agents
     match:
-      env:
-        CLAUDECODE: "1"
+      is_coding_agent: true
     action: confirm
 
   - name: container-deny
@@ -145,25 +144,63 @@ Allow signing for well-known git hosts without confirmation:
     action: allow
 ```
 
-### AI coding tools
+### Coding agents
 
-AI tools that make SSH connections (git push, remote operations)
-can be required to confirm via YubiKey:
+AI coding tools that make SSH connections (git push, remote
+operations) can be required to confirm via YubiKey.  The proxy
+detects coding agents automatically via env vars and ancestor
+process names.
+
+**Simple: match any coding agent**
 
 ```yaml
-  # Claude Code
-  - name: claude
+  - name: coding-agents
+    match:
+      is_coding_agent: true
+    action: confirm
+```
+
+Built-in detection covers Claude (`CLAUDECODE=1`), Cursor
+(ancestor `cursor`), Copilot (ancestor `copilot`), Aider
+(ancestor `aider`), Windsurf (ancestor `windsurf`), Amp
+(ancestor `amp`), and Pi (ancestor `pi`).
+
+**Extend with additional agents**
+
+Add new agents or extend built-in ones via the top-level
+`coding_agents` section:
+
+```yaml
+coding_agents:
+  aider:
+    ancestors: [aider]
+  windsurf:
+    env:
+      WINDSURF_ID: "1"
+    ancestors: [windsurf]
+
+rules:
+  - name: coding-agents
+    match:
+      is_coding_agent: true
+    action: confirm
+```
+
+The detected agent name appears in log events as
+`coding_agent_name` (e.g., `"claude"`, `"cursor"`, `"aider"`).
+
+**Specific agent via env (still works)**
+
+```yaml
+  - name: claude-only
     match:
       env:
         CLAUDECODE: "1"
     action: confirm
-
-  # Any AI tool — match by ancestor process
-  - name: ai-ancestors
-    match:
-      ancestor: [claude, cursor, copilot-agent]
-    action: confirm
 ```
+
+Env vars referenced in `match.env` are automatically captured
+from `/proc/pid/environ` — no need to list them separately.
 
 ### Forwarded agent restrictions
 
@@ -283,15 +320,16 @@ context:
   cmdline: /bin/bash
   exe_path: /usr/bin/bash
   local_cwd: /home/alice/src/myproject
+  is_coding_agent: false
   ...
 policy_evaluation:
   rules:
     - name: git-hosts
       matched: false
       mismatches: ["ssh_dest: empty, want git@github.com"]
-    - name: ai-tools
+    - name: coding-agents
       matched: false
-      mismatches: ["env.CLAUDECODE: empty, want 1"]
+      mismatches: ["is_coding_agent: want true, got false"]
 result:
   action: allow
   rule: default

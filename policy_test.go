@@ -723,6 +723,60 @@ rules:
 			wantRule:   "default",
 		},
 		{
+			name: "is_coding_agent match true",
+			yaml: `
+default_action: allow
+rules:
+  - name: agent-confirm
+    match:
+      is_coding_agent: true
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name:          "ssh",
+				IsCodingAgent: true,
+				Env:           map[string]string{},
+			},
+			wantAction: Confirm,
+			wantRule:   "agent-confirm",
+		},
+		{
+			name: "is_coding_agent match false",
+			yaml: `
+default_action: allow
+rules:
+  - name: agent-confirm
+    match:
+      is_coding_agent: true
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name:          "ssh",
+				IsCodingAgent: false,
+				Env:           map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "default",
+		},
+		{
+			name: "is_coding_agent false matches non-agent",
+			yaml: `
+default_action: deny
+rules:
+  - name: human-allow
+    match:
+      is_coding_agent: false
+    action: allow
+`,
+			caller: &CallerContext{
+				Name:          "ssh",
+				IsCodingAgent: false,
+				Env:           map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "human-allow",
+		},
+		{
 			name: "ancestor match",
 			yaml: `
 default_action: deny
@@ -1661,5 +1715,213 @@ rules:
 
 	if loadResult.OK {
 		t.Error("config with glob-shadowed ssh_dest rule should fail to load")
+	}
+}
+
+func TestCaptureExtraEnvVarsConfig(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	yaml := `
+default_action: confirm
+capture_extra_env_vars: [CURSOR_SESSION, WINDSURF_ID]
+rules: []
+`
+	os.WriteFile(policyFile, []byte(yaml), 0644)
+	_, loadResult := NewPolicy(policyFile)
+	if !loadResult.OK {
+		t.Fatalf("load failed: %v", loadResult.Errors)
+	}
+
+	captureList := getEnvVarsToCapture()
+	want := map[string]bool{
+		"SSH_CONNECTION":    true,
+		"SSH_TTY":           true,
+		"DISPLAY":           true,
+		"WAYLAND_DISPLAY":   true,
+		"TERM":              true,
+		"TMUX_PANE":         true,
+		"CLAUDECODE":        true,
+		"CURSOR_SESSION":    true,
+		"WINDSURF_ID":       true,
+	}
+	got := make(map[string]bool, len(captureList))
+	for _, v := range captureList {
+		got[v] = true
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("missing env var %q in capture list", name)
+		}
+	}
+}
+
+func TestEnvVarsCapturedFromRuleMatchEnv(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	yaml := `
+default_action: confirm
+rules:
+  - name: custom-env
+    match:
+      env:
+        MY_CUSTOM_VAR: "1"
+    action: deny
+`
+	os.WriteFile(policyFile, []byte(yaml), 0644)
+	_, loadResult := NewPolicy(policyFile)
+	if !loadResult.OK {
+		t.Fatalf("load failed: %v", loadResult.Errors)
+	}
+
+	captureList := getEnvVarsToCapture()
+	found := false
+	for _, v := range captureList {
+		if v == "MY_CUSTOM_VAR" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("env var from rule match.env not in capture list")
+	}
+}
+
+func TestCodingAgentsConfig(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+
+	yaml := `
+default_action: confirm
+coding_agents:
+  aider:
+    ancestors: [aider]
+  windsurf:
+    env:
+      WINDSURF_ID: "1"
+    ancestors: [windsurf]
+rules: []
+`
+	os.WriteFile(policyFile, []byte(yaml), 0644)
+	_, loadResult := NewPolicy(policyFile)
+	if !loadResult.OK {
+		t.Fatalf("load failed: %v", loadResult.Errors)
+	}
+
+	// Verify WINDSURF_ID is in capture list (from coding_agents env)
+	captureList := getEnvVarsToCapture()
+	found := false
+	for _, v := range captureList {
+		if v == "WINDSURF_ID" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("env var from coding_agents not in capture list")
+	}
+
+	// Verify heuristics were merged
+	h := getCodingAgentHeuristics()
+	if h == nil {
+		t.Fatal("coding agent heuristics not set")
+	}
+
+	// Builtin "claude" should still be present
+	if _, ok := h.agents["claude"]; !ok {
+		t.Error("builtin agent 'claude' missing after merge")
+	}
+
+	// User-added agents should be present
+	if agent, ok := h.agents["aider"]; !ok {
+		t.Error("user agent 'aider' missing")
+	} else if len(agent.Ancestors) == 0 || agent.Ancestors[0] != "aider" {
+		t.Errorf("aider ancestors = %v, want [aider]", agent.Ancestors)
+	}
+
+	if agent, ok := h.agents["windsurf"]; !ok {
+		t.Error("user agent 'windsurf' missing")
+	} else {
+		if agent.Env["WINDSURF_ID"] != "1" {
+			t.Errorf("windsurf env = %v, want WINDSURF_ID=1", agent.Env)
+		}
+	}
+}
+
+func TestDetectCodingAgentEnv(t *testing.T) {
+	// Set up heuristics with builtins
+	merged := mergeCodingAgents(nil)
+	codingAgentHeuristicsVal.Store(&codingAgentHeuristics{agents: merged})
+
+	ctx := &CallerContext{
+		Name:     "ssh",
+		Env:      map[string]string{"CLAUDECODE": "1"},
+		Ancestry: []AncestorInfo{{PID: 100, Name: "ssh"}},
+	}
+	name, found := detectCodingAgent(ctx)
+	if !found {
+		t.Error("expected coding agent detection for CLAUDECODE=1")
+	}
+	if name != "claude" {
+		t.Errorf("agent name = %q, want %q", name, "claude")
+	}
+}
+
+func TestDetectCodingAgentAncestor(t *testing.T) {
+	// Set up heuristics with a custom agent
+	merged := mergeCodingAgents(map[string]CodingAgentYAML{
+		"aider": {Ancestors: []string{"aider"}},
+	})
+	codingAgentHeuristicsVal.Store(&codingAgentHeuristics{agents: merged})
+
+	ctx := &CallerContext{
+		Name: "ssh",
+		Env:  map[string]string{},
+		Ancestry: []AncestorInfo{
+			{PID: 100, Name: "ssh"},
+			{PID: 50, Name: "bash"},
+			{PID: 10, Name: "aider"},
+		},
+	}
+	name, found := detectCodingAgent(ctx)
+	if !found {
+		t.Error("expected coding agent detection for aider ancestor")
+	}
+	if name != "aider" {
+		t.Errorf("agent name = %q, want %q", name, "aider")
+	}
+}
+
+func TestDetectCodingAgentNone(t *testing.T) {
+	merged := mergeCodingAgents(nil)
+	codingAgentHeuristicsVal.Store(&codingAgentHeuristics{agents: merged})
+
+	ctx := &CallerContext{
+		Name: "ssh",
+		Env:  map[string]string{},
+		Ancestry: []AncestorInfo{
+			{PID: 100, Name: "ssh"},
+			{PID: 50, Name: "bash"},
+		},
+	}
+	name, found := detectCodingAgent(ctx)
+	if found {
+		t.Errorf("expected no coding agent, got %q", name)
+	}
+}
+
+func TestMergeCodingAgentsExtends(t *testing.T) {
+	// User adds new env to builtin "claude" agent
+	merged := mergeCodingAgents(map[string]CodingAgentYAML{
+		"claude": {Env: map[string]string{"CLAUDE_EXTRA": "yes"}},
+	})
+
+	agent := merged["claude"]
+	if agent.Env["CLAUDECODE"] != "1" {
+		t.Error("builtin CLAUDECODE heuristic lost during merge")
+	}
+	if agent.Env["CLAUDE_EXTRA"] != "yes" {
+		t.Error("user CLAUDE_EXTRA heuristic not merged")
 	}
 }

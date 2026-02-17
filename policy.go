@@ -8,13 +8,39 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v3"
 )
+
+// builtinCodingAgents defines the default coding agent detection heuristics.
+// These are always active and merge with any user-configured coding_agents.
+var builtinCodingAgents = map[string]CodingAgentYAML{
+	"claude":   {Env: map[string]string{"CLAUDECODE": "1"}},
+	"cursor":   {Ancestors: []string{"cursor"}},
+	"copilot":  {Ancestors: []string{"copilot"}},
+	"aider":    {Ancestors: []string{"aider"}},
+	"windsurf": {Ancestors: []string{"windsurf"}},
+	"amp":      {Ancestors: []string{"amp"}},
+	"pi":       {Ancestors: []string{"pi"}},
+}
+
+// codingAgentHeuristics holds the merged (builtin + config) per-agent detection rules.
+type codingAgentHeuristics struct {
+	agents map[string]CodingAgentYAML // agent name → heuristic set
+}
+
+// codingAgentHeuristicsVal is set by Policy.Load() and read by getCallerContextFromPID.
+var codingAgentHeuristicsVal atomic.Value // stores *codingAgentHeuristics
+
+// envVarsCaptureListVal holds the merged env var names to read from /proc.
+// Set by Policy.Load(), read by readSelectedEnv.
+var envVarsCaptureListVal atomic.Value // stores []string
 
 // Action represents a policy decision.
 type Action int
@@ -53,10 +79,19 @@ func (a Action) String() string {
 
 // PolicyConfig is the top-level policy file structure.
 type PolicyConfig struct {
-	DefaultAction string            `yaml:"default_action"` // allow, deny, confirm
-	Path          []string          `yaml:"path,omitempty"`  // extra dirs to search for binaries
-	Rules         []Rule            `yaml:"rules"`
-	Confirm       ConfirmPolicyYAML `yaml:"confirm,omitempty"`
+	DefaultAction    string                       `yaml:"default_action"`              // allow, deny, confirm
+	Path             []string                     `yaml:"path,omitempty"`              // extra dirs to search for binaries
+	CaptureExtraEnv  []string                     `yaml:"capture_extra_env_vars,omitempty"` // additional env vars to read from /proc
+	CodingAgents     map[string]CodingAgentYAML   `yaml:"coding_agents,omitempty"`     // per-agent detection heuristics
+	Rules            []Rule                       `yaml:"rules"`
+	Confirm          ConfirmPolicyYAML            `yaml:"confirm,omitempty"`
+}
+
+// CodingAgentYAML defines detection heuristics for a single coding agent.
+// A caller is identified as this agent if any env var matches OR any ancestor matches.
+type CodingAgentYAML struct {
+	Env       map[string]string `yaml:"env,omitempty"`       // env var name → expected value
+	Ancestors []string          `yaml:"ancestors,omitempty"` // process names in ancestry
 }
 
 // ConfirmPolicyYAML configures the two YubiKey confirmation methods.
@@ -114,6 +149,7 @@ type MatchSpec struct {
 	CWD                string            `yaml:"cwd,omitempty"`
 	TmuxWindow         string            `yaml:"tmux_window,omitempty"`
 	IsInContainer      *bool             `yaml:"is_in_container,omitempty"`
+	IsCodingAgent      *bool             `yaml:"is_coding_agent,omitempty"`
 	Env                map[string]string `yaml:"env,omitempty"`
 }
 
@@ -234,6 +270,7 @@ type compiledMatch struct {
 	cwd                *matchPattern
 	tmuxWindow         *matchPattern
 	isInContainer      *bool
+	isCodingAgent      *bool
 	env                map[string]string
 }
 
@@ -442,6 +479,9 @@ func (p *Policy) Load() LoadResult {
 			p.configSHA256 = ""
 			p.configContent = ""
 			resolveBins()
+			mergedAgents := mergeCodingAgents(nil)
+			codingAgentHeuristicsVal.Store(&codingAgentHeuristics{agents: mergedAgents})
+			envVarsCaptureListVal.Store(computeEnvVarsToCapture(config, mergedAgents))
 			return LoadResult{OK: true}
 		}
 		// Read error (EPERM, etc.) — keep previous valid config
@@ -563,6 +603,13 @@ func (p *Policy) Load() LoadResult {
 	extraBinPathsVal.Store(paths)
 	resolveBins()
 
+	// Merge coding agent heuristics (builtin + config) and store atomically
+	mergedAgents := mergeCodingAgents(config.CodingAgents)
+	codingAgentHeuristicsVal.Store(&codingAgentHeuristics{agents: mergedAgents})
+
+	// Compute and store the merged env var capture list
+	envVarsCaptureListVal.Store(computeEnvVarsToCapture(config, mergedAgents))
+
 	if verbose {
 		log.Printf("policy: loaded %d rules from %s (default: %s)", len(rules), p.path, defaultAction)
 	}
@@ -642,6 +689,7 @@ func compileMatch(m MatchSpec) (compiledMatch, error) {
 		cwd:               compile("cwd", m.CWD),
 		tmuxWindow:        compile("tmux_window", m.TmuxWindow),
 		isInContainer:     m.IsInContainer,
+		isCodingAgent:     m.IsCodingAgent,
 		env:               m.Env,
 	}
 	if len(errs) > 0 {
@@ -774,6 +822,13 @@ func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, ke
 		}
 	}
 
+	// is_coding_agent: bool against CallerContext.IsCodingAgent
+	if m.isCodingAgent != nil {
+		if *m.isCodingAgent != ctx.IsCodingAgent {
+			return false
+		}
+	}
+
 	// env: all specified env vars must match
 	for k, v := range m.env {
 		actual, ok := ctx.Env[k]
@@ -886,6 +941,9 @@ func (m *compiledMatch) checkMismatches(ctx *CallerContext, session *SessionBind
 	}
 	if m.isInContainer != nil && *m.isInContainer != ctx.IsContainer {
 		mm = append(mm, fmt.Sprintf("is_in_container: want %v, got %v", *m.isInContainer, ctx.IsContainer))
+	}
+	if m.isCodingAgent != nil && *m.isCodingAgent != ctx.IsCodingAgent {
+		mm = append(mm, fmt.Sprintf("is_coding_agent: want %v, got %v", *m.isCodingAgent, ctx.IsCodingAgent))
 	}
 	for k, v := range m.env {
 		actual := ctx.Env[k]
@@ -1010,6 +1068,9 @@ func onlyDiffersInSSHDest(a, b compiledMatch) bool {
 	if a.isInContainer != nil || b.isInContainer != nil {
 		return false
 	}
+	if a.isCodingAgent != nil || b.isCodingAgent != nil {
+		return false
+	}
 	if len(a.env) != 0 || len(b.env) != 0 {
 		return false
 	}
@@ -1021,4 +1082,93 @@ func defaultPolicyPath() string {
 		return filepath.Join(dir, "ssh-ag", "policy.yaml")
 	}
 	return filepath.Join(os.Getenv("HOME"), ".config", "ssh-ag", "policy.yaml")
+}
+
+// mergeCodingAgents merges builtin coding agent heuristics with user config.
+// User config is additive: new agents are added, existing agents get their
+// env and ancestor lists extended.
+func mergeCodingAgents(userAgents map[string]CodingAgentYAML) map[string]CodingAgentYAML {
+	merged := make(map[string]CodingAgentYAML, len(builtinCodingAgents)+len(userAgents))
+	for name, h := range builtinCodingAgents {
+		merged[name] = CodingAgentYAML{
+			Env:       copyMap(h.Env),
+			Ancestors: append([]string(nil), h.Ancestors...),
+		}
+	}
+	for name, h := range userAgents {
+		existing, ok := merged[name]
+		if !ok {
+			merged[name] = CodingAgentYAML{
+				Env:       copyMap(h.Env),
+				Ancestors: append([]string(nil), h.Ancestors...),
+			}
+			continue
+		}
+		for k, v := range h.Env {
+			if existing.Env == nil {
+				existing.Env = make(map[string]string)
+			}
+			existing.Env[k] = v
+		}
+		existing.Ancestors = append(existing.Ancestors, h.Ancestors...)
+		merged[name] = existing
+	}
+	return merged
+}
+
+func copyMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+// computeEnvVarsToCapture returns the deduplicated set of env var names to
+// read from /proc/pid/environ. Sources: builtins + capture_extra_env_vars +
+// coding_agents env keys + rule match.env keys.
+func computeEnvVarsToCapture(config *PolicyConfig, mergedAgents map[string]CodingAgentYAML) []string {
+	seen := make(map[string]bool)
+	var result []string
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			result = append(result, name)
+		}
+	}
+
+	// Built-in defaults
+	for _, name := range builtinEnvVars {
+		add(name)
+	}
+
+	if config == nil {
+		sort.Strings(result)
+		return result
+	}
+
+	// Config capture_extra_env_vars
+	for _, name := range config.CaptureExtraEnv {
+		add(name)
+	}
+
+	// Coding agent env keys
+	for _, h := range mergedAgents {
+		for name := range h.Env {
+			add(name)
+		}
+	}
+
+	// Rule match.env keys
+	for _, r := range config.Rules {
+		for name := range r.Match.Env {
+			add(name)
+		}
+	}
+
+	sort.Strings(result)
+	return result
 }

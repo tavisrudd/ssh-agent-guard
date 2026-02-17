@@ -38,15 +38,49 @@ With the kernel-verified PID, the proxy reads:
 
 ### Environment capture
 
-Only a fixed set of environment variables are read, to limit exposure:
+Environment variables are read from `/proc/$pid/environ` using a
+dynamic capture list.  The list is computed from four sources:
 
-- `SSH_CONNECTION`, `SSH_TTY` -- session detection
-- `DISPLAY`, `WAYLAND_DISPLAY` -- display detection
-- `TERM`, `TMUX_PANE` -- terminal/multiplexer context
-- `CLAUDECODE` -- AI tool detection
+1. **Built-in defaults** -- always captured:
+   - `SSH_CONNECTION`, `SSH_TTY` -- session detection
+   - `DISPLAY`, `WAYLAND_DISPLAY` -- display detection
+   - `TERM`, `TMUX_PANE` -- terminal/multiplexer context
+   - `CLAUDECODE` -- coding agent detection
+2. **`capture_extra_env_vars`** -- additional names from the policy
+   config.
+3. **`coding_agents` env keys** -- env vars referenced in the
+   coding agent heuristics section.
+4. **Rule `match.env` keys** -- env vars referenced in any rule's
+   `env:` match.
 
-These are used for policy matching (`env:` field) and forwarded
-session detection.
+Variables from sources 3 and 4 are captured automatically -- there
+is no need to also list them in `capture_extra_env_vars`.
+
+These are used for policy matching (`env:` field), coding agent
+detection, and forwarded session detection.
+
+### Coding agent detection
+
+The proxy identifies coding agents (AI tools that make SSH
+connections) via configurable heuristics.  A caller is flagged as
+`is_coding_agent: true` when any heuristic matches, and the
+specific agent name is recorded as `coding_agent_name`.
+
+**Built-in agents** (always active):
+
+| Agent      | Heuristic                        |
+|------------|----------------------------------|
+| `claude`   | env `CLAUDECODE=1`               |
+| `cursor`   | ancestor process `cursor`        |
+| `copilot`  | ancestor process `copilot`       |
+| `aider`    | ancestor process `aider`         |
+| `windsurf` | ancestor process `windsurf`      |
+| `amp`      | ancestor process `amp`           |
+| `pi`       | ancestor process `pi`            |
+
+**User-configured agents** are added via the `coding_agents`
+policy section and merged additively with builtins.  See
+[policy-guide.md](policy-guide.md#coding-agents) for examples.
 
 ### Executable path
 

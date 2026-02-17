@@ -32,13 +32,19 @@ func TestBuildSummary(t *testing.T) {
 		},
 		{
 			name:   "claude prefix",
-			caller: &CallerContext{Name: "ssh", IsClaude: true},
+			caller: &CallerContext{Name: "ssh", IsCodingAgent: true, CodingAgentName: "claude"},
 			detail: "sign host",
 			want:   "claude:ssh: sign host",
 		},
 		{
+			name:   "cursor prefix",
+			caller: &CallerContext{Name: "ssh", IsCodingAgent: true, CodingAgentName: "cursor"},
+			detail: "sign host",
+			want:   "cursor:ssh: sign host",
+		},
+		{
 			name:   "all decorations",
-			caller: &CallerContext{Name: "ssh", IsClaude: true, TmuxWindow: "work:code", ForwardedVia: "bastion"},
+			caller: &CallerContext{Name: "ssh", IsCodingAgent: true, CodingAgentName: "claude", TmuxWindow: "work:code", ForwardedVia: "bastion"},
 			detail: "sign prod.example.com",
 			want:   "claude:[work:code] ssh: sign prod.example.com via bastion",
 		},

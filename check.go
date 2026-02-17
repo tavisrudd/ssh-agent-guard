@@ -23,7 +23,8 @@ type checkContext struct {
 	ForwardedSessionHeuristic string            `yaml:"forwarded_session_heuristic"`
 	IsContainer               bool              `yaml:"is_container"`
 	PIDNamespace              string            `yaml:"pid_namespace,omitempty"`
-	IsClaude                  bool              `yaml:"is_claude"`
+	IsCodingAgent             bool              `yaml:"is_coding_agent"`
+	CodingAgentName           string            `yaml:"coding_agent_name,omitempty"`
 	TmuxWindow                string            `yaml:"tmux_window,omitempty"`
 	SSHDest                   string            `yaml:"ssh_dest,omitempty"`
 	ForwardedVia              string            `yaml:"forwarded_via,omitempty"`
@@ -51,7 +52,6 @@ type checkResult struct {
 // runCheck gathers caller context and evaluates policy rules, printing results.
 // Used for debugging/testing the proxy's view of processes and rule matching.
 func runCheck(policyPath string, pid int, keyFingerprint string) {
-	// Gather caller context
 	var checkPID int32
 	if pid > 0 {
 		checkPID = int32(pid)
@@ -59,6 +59,10 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 		// Use parent PID (the shell running this command) for a more useful check
 		checkPID = int32(os.Getppid())
 	}
+
+	// Load policy first so the env var capture list and coding agent
+	// heuristics atomics are populated before gathering caller context.
+	policy, _ := NewPolicy(policyPath)
 
 	ctx := getCallerContextFromPID(checkPID)
 
@@ -74,7 +78,8 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,
 		PIDNamespace:              ctx.PIDNamespace,
-		IsClaude:                  ctx.IsClaude,
+		IsCodingAgent:             ctx.IsCodingAgent,
+		CodingAgentName:           ctx.CodingAgentName,
 		TmuxWindow:                ctx.TmuxWindow,
 		SSHDest:                   ctx.SSHDest,
 		ForwardedVia:              ctx.ForwardedVia,
@@ -94,9 +99,7 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 		out.PolicyEvaluation.Key = &keyFingerprint
 	}
 
-	policy, _ := NewPolicy(policyPath)
 	results := policy.EvaluateVerbose(ctx, nil, keyFingerprint)
-
 	out.PolicyEvaluation.Rules = results
 
 	// Build result section

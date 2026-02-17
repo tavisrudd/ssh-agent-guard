@@ -1,5 +1,5 @@
 .nh
-.TH SSH-AGENT-GUARD-POLICY 5 "2026-02-15" "ssh-agent-guard" "File Formats"
+.TH SSH-AGENT-GUARD-POLICY 5 "2026-02-16" "ssh-agent-guard" "File Formats"
 
 .SH NAME
 ssh-agent-guard-policy \- policy configuration for ssh-agent-guard
@@ -66,6 +66,53 @@ List of additional directories to search for external binaries
 Tilde expansion is supported.
 Searched before system defaults (\fI/run/current-system/sw/bin\fP,
 \fI/usr/bin\fP) and \fBPATH\fP\&.
+
+.TP
+\fBcapture_extra_env_vars\fP
+List of additional environment variable names to read from
+\fI/proc/$pid/environ\fP\&.
+These are added to the built-in capture list and any variables
+referenced in \fBcoding_agents\fP env heuristics or rule \fBmatch.env\fP
+keys.
+.EX
+capture_extra_env_vars: [MY_CUSTOM_VAR]
+.EE
+
+.TP
+\fBcoding_agents\fP
+Map of coding agent names to detection heuristics.
+Each agent entry can specify \fBenv\fP (map of env var name to expected
+value) and/or \fBancestors\fP (list of ancestor process names).
+A caller is identified as a coding agent when any heuristic matches.
+.sp
+Built-in agents (always active):
+.RS
+.IP \(bu 3
+\fBclaude\fP: env \fBCLAUDECODE=1\fP
+.IP \(bu 3
+\fBcursor\fP: ancestor \fBcursor\fP
+.IP \(bu 3
+\fBcopilot\fP: ancestor \fBcopilot\fP
+.IP \(bu 3
+\fBaider\fP: ancestor \fBaider\fP
+.IP \(bu 3
+\fBwindsurf\fP: ancestor \fBwindsurf\fP
+.IP \(bu 3
+\fBamp\fP: ancestor \fBamp\fP
+.IP \(bu 3
+\fBpi\fP: ancestor \fBpi\fP
+.RE
+.sp
+User entries are merged additively with builtins.
+.EX
+coding_agents:
+  aider:
+    ancestors: [aider]
+  windsurf:
+    env:
+      WINDSURF_ID: "1"
+    ancestors: [windsurf]
+.EE
 
 .TP
 \fBrules\fP
@@ -234,12 +281,23 @@ line, and ancestry may be unavailable or refer to wrong processes
 unless the container shares the host PID namespace (\fB--pid=host\fP).
 
 .TP
+\fBis_coding_agent:\fP \fItrue\fP | \fIfalse\fP
+Boolean.
+Whether the caller was identified as a coding agent by the
+\fBcoding_agents\fP heuristics (env vars and ancestor process names).
+The detected agent name is available in log events as
+\fBcoding_agent_name\fP\&.
+
+.TP
 \fBenv:\fP \fImap\fP
 Map of environment variable names to expected values.
 All specified variables must match.
-Only variables in the capture list are available:
-\fBSSH_CONNECTION\fP, \fBSSH_TTY\fP, \fBDISPLAY\fP, \fBWAYLAND_DISPLAY\fP,
-\fBTERM\fP, \fBTMUX_PANE\fP, \fBCLAUDECODE\fP\&.
+The capture list includes built-in variables (\fBSSH_CONNECTION\fP,
+\fBSSH_TTY\fP, \fBDISPLAY\fP, \fBWAYLAND_DISPLAY\fP, \fBTERM\fP,
+\fBTMUX_PANE\fP, \fBCLAUDECODE\fP) plus any variables from
+\fBcapture_extra_env_vars\fP, \fBcoding_agents\fP env keys, and other
+rules' \fBmatch.env\fP keys.
+Variables referenced in rules are automatically captured.
 
 
 .SH EXAMPLES
@@ -277,15 +335,21 @@ rules:
     action: deny
 .EE
 
-.SS Confirm for AI tools
+.SS Confirm for coding agents
 .EX
 default_action: allow
 
+coding_agents:
+  aider:
+    ancestors: [aider]
+
 rules:
-  - name: claude-confirm
+  # Require confirmation for any detected coding agent
+  # (Claude, Cursor, Copilot are detected by default;
+  # aider added above)
+  - name: coding-agent-confirm
     match:
-      env:
-        CLAUDECODE: "1"
+      is_coding_agent: true
     action: confirm
 .EE
 

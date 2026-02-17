@@ -34,6 +34,8 @@ type logEvent struct {
 	ForwardedSessionHeuristic string            `yaml:"forwarded_session_heuristic"`
 	IsContainer               bool              `yaml:"is_container,omitempty"`
 	PIDNamespace              string            `yaml:"pid_namespace,omitempty"`
+	IsCodingAgent             bool              `yaml:"is_coding_agent,omitempty"`
+	CodingAgentName           string            `yaml:"coding_agent_name,omitempty"`
 	Decision                  string            `yaml:"decision"`
 	Rule                      string            `yaml:"rule,omitempty"`
 	ConfirmMethod             string            `yaml:"confirm_method,omitempty"`
@@ -161,6 +163,8 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,
 		PIDNamespace:              ctx.PIDNamespace,
+		IsCodingAgent:             ctx.IsCodingAgent,
+		CodingAgentName:           ctx.CodingAgentName,
 		Decision:                  decision,
 		Rule:                      result.RuleName,
 		ConfirmMethod:             result.ConfirmMethod,
@@ -200,6 +204,8 @@ func buildMutationEvent(ts time.Time, ctx *CallerContext, op string, logPath str
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,
 		PIDNamespace:              ctx.PIDNamespace,
+		IsCodingAgent:             ctx.IsCodingAgent,
+		CodingAgentName:           ctx.CodingAgentName,
 		Decision:                  "deny",
 		LogFile:                   logPath,
 		Forensics:                 forensics,
@@ -510,8 +516,8 @@ func writeLogFile(path string, ev *logEvent) {
 
 func buildSummary(ctx *CallerContext, session *SessionBindInfo, detail string) string {
 	prefix := ""
-	if ctx.IsClaude {
-		prefix = "claude:"
+	if ctx.CodingAgentName != "" {
+		prefix = ctx.CodingAgentName + ":"
 	}
 	if ctx.TmuxWindow != "" {
 		prefix += fmt.Sprintf("[%s] ", ctx.TmuxWindow)

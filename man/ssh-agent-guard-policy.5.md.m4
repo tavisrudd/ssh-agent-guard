@@ -1,6 +1,6 @@
 changequote([[[,]]])dnl
 define([[[MANPAGE]]],[[[1]]])dnl
-% SSH-AGENT-GUARD-POLICY 5 "2026-02-15" "ssh-agent-guard" "File Formats"
+% SSH-AGENT-GUARD-POLICY 5 "2026-02-16" "ssh-agent-guard" "File Formats"
 
 # NAME
 
@@ -65,6 +65,23 @@ Default: **allow**.
 Tilde expansion is supported.
 Searched before system defaults (*/run/current-system/sw/bin*,
 */usr/bin*) and **PATH**.
+
+**capture_extra_env_vars**
+: List of additional environment variable names to read from
+*/proc/$pid/environ*.  These are added to the built-in capture list
+and any variables referenced in **coding_agents** env heuristics or
+rule **match.env** keys.
+
+**coding_agents**
+: Map of coding agent names to detection heuristics.  Each agent
+entry can specify **env** (map of env var name to expected value)
+and/or **ancestors** (list of ancestor process names).  A caller is
+identified as a coding agent when any heuristic matches.
+Built-in agents (always active): **claude** (env CLAUDECODE=1),
+**cursor** (ancestor cursor), **copilot** (ancestor copilot),
+**aider** (ancestor aider), **windsurf** (ancestor windsurf),
+**amp** (ancestor amp), **pi** (ancestor pi).
+User entries are merged additively with builtins.
 
 **rules**
 : Ordered list of rules.
@@ -212,12 +229,20 @@ Container callers have incomplete identity — process name, command
 line, and ancestry may be unavailable or refer to wrong processes
 unless the container shares the host PID namespace (**--pid=host**).
 
+**is_coding_agent:** *true* | *false*
+: Boolean.
+Whether the caller was identified as a coding agent by the
+**coding_agents** heuristics.  The detected agent name is available
+in log events as **coding_agent_name**.
+
 **env:** *map*
 : Map of environment variable names to expected values.
 All specified variables must match.
-Only variables in the capture list are available:
-**SSH_CONNECTION**, **SSH_TTY**, **DISPLAY**, **WAYLAND_DISPLAY**,
-**TERM**, **TMUX_PANE**, **CLAUDECODE**.
+The capture list includes built-in variables (**SSH_CONNECTION**,
+**SSH_TTY**, **DISPLAY**, **WAYLAND_DISPLAY**, **TERM**,
+**TMUX_PANE**, **CLAUDECODE**) plus any from **capture_extra_env_vars**,
+**coding_agents** env keys, and other rules' **match.env** keys.
+Variables referenced in rules are automatically captured.
 
 # EXAMPLES
 
@@ -256,16 +281,20 @@ rules:
     action: deny
 ```
 
-### Confirm for AI tools
+### Confirm for coding agents
 
 ```yaml
 default_action: allow
 
+coding_agents:
+  aider:
+    ancestors: [aider]
+
 rules:
-  - name: claude-confirm
+  # Require confirmation for any detected coding agent
+  - name: coding-agent-confirm
     match:
-      env:
-        CLAUDECODE: "1"
+      is_coding_agent: true
     action: confirm
 ```
 

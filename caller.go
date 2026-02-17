@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -170,7 +171,8 @@ type CallerContext struct {
 	Ancestry   []AncestorInfo    // process tree (self → init)
 	SSHDest                   string // extracted from ssh cmdline
 	ForwardedVia              string // intermediate host (user@host) from mux socket path
-	IsClaude                  bool   // CLAUDECODE=1 in env
+	IsCodingAgent             bool   // any coding agent heuristic matched
+	CodingAgentName           string // which agent matched (e.g. "claude", "cursor")
 	IsForwardedSession        bool   // detected via ForwardedSessionHeuristic
 	ForwardedSessionHeuristic string // how IsForwardedSession was determined
 	IsContainer       bool   // caller is in a different PID namespace
@@ -183,15 +185,28 @@ type AncestorInfo struct {
 	Cmdline string
 }
 
-// envVarsToCapture are read from /proc/$pid/environ for logging context.
-var envVarsToCapture = []string{
+// builtinEnvVars are always captured from /proc/$pid/environ regardless of config.
+// Coding-agent-specific vars (e.g. CLAUDECODE) are pulled in automatically
+// from the coding_agents heuristics — no need to list them here.
+var builtinEnvVars = []string{
 	"SSH_CONNECTION",
 	"SSH_TTY",
 	"DISPLAY",
 	"WAYLAND_DISPLAY",
 	"TERM",
 	"TMUX_PANE",
-	"CLAUDECODE",
+	"XDG_SESSION_TYPE",
+}
+
+// getEnvVarsToCapture returns the active env var capture list.
+// Uses the policy-computed list if available, otherwise falls back to builtins.
+func getEnvVarsToCapture() []string {
+	if v := envVarsCaptureListVal.Load(); v != nil {
+		if list, ok := v.([]string); ok && len(list) > 0 {
+			return list
+		}
+	}
+	return builtinEnvVars
 }
 
 func getCallerContext(conn net.Conn) *CallerContext {
@@ -238,10 +253,11 @@ func getCallerContextFromPID(pid int32) *CallerContext {
 		ctx.TmuxWindow = resolveTmuxWindow(pane)
 	}
 
-	ctx.IsClaude = ctx.Env["CLAUDECODE"] == "1"
-
 	// Walk process ancestry (up to 8 levels)
 	ctx.Ancestry = walkAncestry(ctx.PID, 8)
+
+	// Detect coding agent (needs both env and ancestry)
+	ctx.CodingAgentName, ctx.IsCodingAgent = detectCodingAgent(ctx)
 
 	// Extract SSH destination from this process or its ancestors.
 	// For forwarded sessions, this is the intermediate host (first hop);
@@ -310,8 +326,9 @@ func readSelectedEnv(ctx *CallerContext, procDir string) {
 	if err != nil {
 		return
 	}
+	captureList := getEnvVarsToCapture()
 	for _, entry := range strings.Split(string(data), "\x00") {
-		for _, name := range envVarsToCapture {
+		for _, name := range captureList {
 			if strings.HasPrefix(entry, name+"=") {
 				ctx.Env[name] = strings.TrimPrefix(entry, name+"=")
 			}
@@ -601,4 +618,58 @@ func extractSSHDest(cmdline string) string {
 		return arg
 	}
 	return ""
+}
+
+// detectCodingAgent checks env vars and ancestry against the merged coding
+// agent heuristics. Returns the agent name and true on first match.
+// Agents are checked in sorted name order for deterministic results.
+func detectCodingAgent(ctx *CallerContext) (string, bool) {
+	h := getCodingAgentHeuristics()
+	if h == nil {
+		// No policy loaded yet — fall back to builtin CLAUDECODE check
+		if ctx.Env["CLAUDECODE"] == "1" {
+			return "claude", true
+		}
+		return "", false
+	}
+
+	// Build ancestor name set once for all agents
+	ancestorNames := make(map[string]bool, len(ctx.Ancestry))
+	for _, a := range ctx.Ancestry {
+		ancestorNames[a.Name] = true
+	}
+
+	// Iterate in sorted order for deterministic results when
+	// a caller matches heuristics for multiple agents.
+	names := make([]string, 0, len(h.agents))
+	for name := range h.agents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		agent := h.agents[name]
+		// Check env heuristics
+		for envKey, envVal := range agent.Env {
+			if ctx.Env[envKey] == envVal {
+				return name, true
+			}
+		}
+		// Check ancestor heuristics
+		for _, ancestor := range agent.Ancestors {
+			if ancestorNames[ancestor] {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+func getCodingAgentHeuristics() *codingAgentHeuristics {
+	if v := codingAgentHeuristicsVal.Load(); v != nil {
+		if h, ok := v.(*codingAgentHeuristics); ok {
+			return h
+		}
+	}
+	return nil
 }

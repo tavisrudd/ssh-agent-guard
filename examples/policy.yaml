@@ -30,11 +30,11 @@ rules:
       ssh_dest: "git@github.com"
     action: allow
 
-  # AI coding tools — require confirmation
-  - name: ai-tools
+  # Coding agents — require confirmation
+  # (detects Claude, Cursor, Copilot, Aider, Windsurf, Amp, Pi)
+  - name: coding-agents
     match:
-      env:
-        CLAUDECODE: "1"
+      is_coding_agent: true
     action: confirm
 
   # Containers — deny by default (incomplete caller identity)

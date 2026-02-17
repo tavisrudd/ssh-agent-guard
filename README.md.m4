@@ -62,11 +62,11 @@ rules:
       ssh_dest: "git@github.com"
     action: allow
 
-  # AI coding tools — require YubiKey confirmation
-  - name: ai-tools
+  # Coding agents — require YubiKey confirmation
+  # (detects Claude, Cursor, Copilot, Aider, Windsurf, Amp, Pi)
+  - name: coding-agents
     match:
-      env:
-        CLAUDECODE: "1"
+      is_coding_agent: true
     action: confirm
 
   # Forwarded agent to known hosts — allow
@@ -154,10 +154,10 @@ policy_evaluation:
       action: allow
       matched: false
       mismatches: ["ssh_dest: empty, want git@github.com"]
-    - name: ai-tools
+    - name: coding-agents
       action: confirm
       matched: false
-      mismatches: ["env.CLAUDECODE: empty, want 1"]
+      mismatches: ["is_coding_agent: want true, got false"]
 result:
   action: allow
   rule: default
