@@ -19,6 +19,7 @@ type checkContext struct {
 	ExePath                   string            `yaml:"exe_path,omitempty"`
 	Cmdline                   string            `yaml:"cmdline"`
 	LocalCWD                  string            `yaml:"local_cwd"`
+	Cgroup                    string            `yaml:"cgroup,omitempty"`
 	IsForwardedSession        bool              `yaml:"is_forwarded_session"`
 	ForwardedSessionHeuristic string            `yaml:"forwarded_session_heuristic"`
 	IsContainer               bool              `yaml:"is_container"`
@@ -74,6 +75,7 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 		ExePath:                   ctx.ExePath,
 		Cmdline:                   ctx.Cmdline,
 		LocalCWD:                  ctx.CWD,
+		Cgroup:                    ctx.Cgroup,
 		IsForwardedSession:        ctx.IsForwardedSession,
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,

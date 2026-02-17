@@ -30,6 +30,7 @@ type logEvent struct {
 	IsForwarded               *bool             `yaml:"is_forwarded,omitempty"`
 	DestKeyFingerprint        string            `yaml:"dest_key_fingerprint,omitempty"`
 	LocalCWD                  string            `yaml:"local_cwd"`
+	Cgroup                    string            `yaml:"cgroup,omitempty"`
 	IsForwardedSession        bool              `yaml:"is_forwarded_session"`
 	ForwardedSessionHeuristic string            `yaml:"forwarded_session_heuristic"`
 	IsContainer               bool              `yaml:"is_container,omitempty"`
@@ -159,6 +160,7 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 		SSHDest:                   dest,
 		ForwardedVia:              ctx.ForwardedVia,
 		LocalCWD:                  ctx.CWD,
+		Cgroup:                    ctx.Cgroup,
 		IsForwardedSession:        ctx.IsForwardedSession,
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,
@@ -200,6 +202,7 @@ func buildMutationEvent(ts time.Time, ctx *CallerContext, op string, logPath str
 		GID:                       ctx.GID,
 		ExePath:                   ctx.ExePath,
 		LocalCWD:                  ctx.CWD,
+		Cgroup:                    ctx.Cgroup,
 		IsForwardedSession:        ctx.IsForwardedSession,
 		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
 		IsContainer:               ctx.IsContainer,

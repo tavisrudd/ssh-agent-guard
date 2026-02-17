@@ -166,6 +166,7 @@ type CallerContext struct {
 	ExePath    string            // resolved executable path (/proc/$pid/exe)
 	Cmdline    string            // full command line
 	CWD        string            // working directory
+	Cgroup     string            // cgroup path (/proc/$pid/cgroup)
 	Env        map[string]string // selected environment variables
 	TmuxWindow string            // resolved from TMUX_PANE
 	Ancestry   []AncestorInfo    // process tree (self → init)
@@ -243,6 +244,11 @@ func getCallerContextFromPID(pid int32) *CallerContext {
 	// Working directory
 	if target, err := os.Readlink(filepath.Join(procDir, "cwd")); err == nil {
 		ctx.CWD = target
+	}
+
+	// Cgroup path
+	if data, err := os.ReadFile(filepath.Join(procDir, "cgroup")); err == nil {
+		ctx.Cgroup = parseCgroup(string(data))
 	}
 
 	// Selected environment variables
@@ -551,6 +557,24 @@ func readProcessAge(pid int32) time.Duration {
 		return 0
 	}
 	return age
+}
+
+// parseCgroup extracts the cgroup path from /proc/$pid/cgroup content.
+// On cgroup v2, returns the path after "0::". On v1, returns the full content trimmed.
+func parseCgroup(content string) string {
+	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+		if strings.HasPrefix(line, "0::") {
+			return strings.TrimPrefix(line, "0::")
+		}
+	}
+	// v1 or unexpected format — return first non-empty line
+	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // extractSSHDest parses an ssh command line for the destination argument.

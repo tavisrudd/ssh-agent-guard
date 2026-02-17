@@ -262,6 +262,53 @@ func TestFindSSHDest(t *testing.T) {
 	}
 }
 
+func TestParseCgroup(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "cgroup v2",
+			content: "0::/user.slice/user-1000.slice/session-1.scope\n",
+			want:    "/user.slice/user-1000.slice/session-1.scope",
+		},
+		{
+			name:    "cgroup v1 single controller",
+			content: "12:blkio:/user.slice\n",
+			want:    "12:blkio:/user.slice",
+		},
+		{
+			name:    "cgroup v2 docker",
+			content: "0::/system.slice/docker-abc123.scope\n",
+			want:    "/system.slice/docker-abc123.scope",
+		},
+		{
+			name:    "mixed v1 and v2",
+			content: "1:name=systemd:/user.slice\n0::/user.slice/user-1000.slice\n",
+			want:    "/user.slice/user-1000.slice",
+		},
+		{
+			name:    "empty",
+			content: "",
+			want:    "",
+		},
+		{
+			name:    "whitespace only",
+			content: "  \n  \n",
+			want:    "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCgroup(tt.content)
+			if got != tt.want {
+				t.Errorf("parseCgroup(%q) = %q, want %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDetectPIDNamespace(t *testing.T) {
 	// Our own PID should be in our own namespace (not a container)
 	ns, isContainer := detectPIDNamespace(int32(os.Getpid()))

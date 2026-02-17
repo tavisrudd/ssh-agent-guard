@@ -856,6 +856,60 @@ rules:
 			wantRule:   "from-src",
 		},
 		{
+			name: "cgroup glob match",
+			yaml: `
+default_action: deny
+rules:
+  - name: user-slice
+    match:
+      cgroup: "/user.slice/*"
+    action: allow
+`,
+			caller: &CallerContext{
+				Name:   "ssh",
+				Cgroup: "/user.slice/user-1000.slice/session-1.scope",
+				Env:    map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "user-slice",
+		},
+		{
+			name: "cgroup regex match",
+			yaml: `
+default_action: deny
+rules:
+  - name: docker-cgroup
+    match:
+      cgroup: "~docker"
+    action: confirm
+`,
+			caller: &CallerContext{
+				Name:   "ssh",
+				Cgroup: "/system.slice/docker-abc123.scope",
+				Env:    map[string]string{},
+			},
+			wantAction: Confirm,
+			wantRule:   "docker-cgroup",
+		},
+		{
+			name: "cgroup no match",
+			yaml: `
+default_action: allow
+rules:
+  - name: docker-deny
+    match:
+      cgroup: "*docker*"
+    action: deny
+`,
+			caller: &CallerContext{
+				Name:   "ssh",
+				Cgroup: "/user.slice/user-1000.slice/session-1.scope",
+				Env:    map[string]string{},
+			},
+			wantAction: Allow,
+			wantRule:   "default",
+		},
+		{
 			name: "ssh_dest from session-bind fallback",
 			yaml: `
 default_action: deny

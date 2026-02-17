@@ -147,6 +147,7 @@ type MatchSpec struct {
 	IsForwarded        *bool             `yaml:"is_forwarded,omitempty"`
 	Key                string            `yaml:"key,omitempty"`
 	CWD                string            `yaml:"cwd,omitempty"`
+	Cgroup             string            `yaml:"cgroup,omitempty"`
 	TmuxWindow         string            `yaml:"tmux_window,omitempty"`
 	IsInContainer      *bool             `yaml:"is_in_container,omitempty"`
 	IsCodingAgent      *bool             `yaml:"is_coding_agent,omitempty"`
@@ -268,6 +269,7 @@ type compiledMatch struct {
 	isForwarded        *bool
 	key                string
 	cwd                *matchPattern
+	cgroup             *matchPattern
 	tmuxWindow         *matchPattern
 	isInContainer      *bool
 	isCodingAgent      *bool
@@ -687,6 +689,7 @@ func compileMatch(m MatchSpec) (compiledMatch, error) {
 		isForwarded:       m.IsForwarded,
 		key:               m.Key,
 		cwd:               compile("cwd", m.CWD),
+		cgroup:            compile("cgroup", m.Cgroup),
 		tmuxWindow:        compile("tmux_window", m.TmuxWindow),
 		isInContainer:     m.IsInContainer,
 		isCodingAgent:     m.IsCodingAgent,
@@ -807,6 +810,11 @@ func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, ke
 
 	// cwd: glob/regex against CallerContext.CWD
 	if !m.cwd.matchString(ctx.CWD) {
+		return false
+	}
+
+	// cgroup: glob/regex against CallerContext.Cgroup
+	if !m.cgroup.matchString(ctx.Cgroup) {
 		return false
 	}
 
@@ -936,6 +944,9 @@ func (m *compiledMatch) checkMismatches(ctx *CallerContext, session *SessionBind
 	if !m.cwd.matchString(ctx.CWD) {
 		mm = append(mm, fmt.Sprintf("cwd: want %q, got %q", m.cwd.raw, ctx.CWD))
 	}
+	if !m.cgroup.matchString(ctx.Cgroup) {
+		mm = append(mm, fmt.Sprintf("cgroup: want %q, got %q", m.cgroup.raw, ctx.Cgroup))
+	}
 	if !m.tmuxWindow.matchString(ctx.TmuxWindow) {
 		mm = append(mm, fmt.Sprintf("tmux_window: want %q, got %q", m.tmuxWindow.raw, ctx.TmuxWindow))
 	}
@@ -1060,6 +1071,9 @@ func onlyDiffersInSSHDest(a, b compiledMatch) bool {
 		return false
 	}
 	if a.cwd != nil || b.cwd != nil {
+		return false
+	}
+	if a.cgroup != nil || b.cgroup != nil {
 		return false
 	}
 	if a.tmuxWindow != nil || b.tmuxWindow != nil {
