@@ -849,7 +849,7 @@ func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, ke
 }
 
 // RuleCheckResult holds the result of evaluating a single rule in verbose mode.
-// Used by --check output and deny forensics logs.
+// Used by the check subcommand output and deny forensics logs.
 type RuleCheckResult struct {
 	Name       string   `yaml:"name"`
 	Action     string   `yaml:"action"`
@@ -858,7 +858,7 @@ type RuleCheckResult struct {
 }
 
 // EvaluateVerbose evaluates all rules and returns detailed match info for each.
-// Used by --check mode for debugging policy configuration.
+// Used by the check subcommand for debugging policy configuration.
 func (p *Policy) EvaluateVerbose(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string) []RuleCheckResult {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

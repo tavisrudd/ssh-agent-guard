@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -14,52 +13,55 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/alecthomas/kong"
 	"golang.org/x/crypto/ssh/agent"
 	"gopkg.in/yaml.v3"
 )
 
 var verbose bool
 
+type CLI struct {
+	Listen   string    `help:"Proxy socket path." default:"${listen_default}" name:"listen"`
+	Upstream string    `help:"Upstream agent socket path." default:"${upstream_default}" name:"upstream"`
+	StateDir string    `help:"State directory for logs." default:"${state_dir_default}" name:"state-dir"`
+	Policy   string    `help:"Policy config path." default:"${policy_default}" name:"policy"`
+	Verbose  bool      `help:"Log all operations including list requests." name:"verbose"`
+	Daemon   DaemonCmd `cmd:"" default:"withargs" hidden:""`
+	Check    CheckCmd  `cmd:"" help:"Gather caller state and evaluate policy (debug mode)."`
+}
+
+type DaemonCmd struct{}
+
+type CheckCmd struct {
+	PID int    `help:"PID to inspect (default: parent process)." default:"0" name:"pid"`
+	Key string `help:"Key fingerprint for policy evaluation." name:"key"`
+}
+
+func (c *CheckCmd) Run(cli *CLI) error {
+	runCheck(cli.Policy, c.PID, c.Key)
+	return nil
+}
+
 func main() {
-	var (
-		listenPath   string
-		upstreamPath string
-		stateDir     string
-		policyPath   string
-		check        bool
-		checkPID     int
-		checkKey     string
-	)
+	var cli CLI
+	ctx := kong.Parse(&cli, kong.Vars{
+		"listen_default":    defaultListenPath(),
+		"upstream_default":  defaultUpstreamPath(),
+		"state_dir_default": defaultStateDir(),
+		"policy_default":    defaultPolicyPath(),
+	})
 
-	flag.StringVar(&listenPath, "listen", defaultListenPath(), "proxy socket path")
-	flag.StringVar(&upstreamPath, "upstream", defaultUpstreamPath(), "upstream agent socket path")
-	flag.StringVar(&stateDir, "state-dir", defaultStateDir(), "state directory for logs")
-	flag.StringVar(&policyPath, "policy", defaultPolicyPath(), "policy config path")
-	flag.BoolVar(&verbose, "verbose", false, "log all operations including list requests")
-	flag.BoolVar(&check, "check", false, "gather caller state and evaluate policy (debug mode)")
-	flag.IntVar(&checkPID, "pid", 0, "PID to inspect (default: parent process, --check only)")
-	flag.StringVar(&checkKey, "key", "", "key fingerprint for policy evaluation (--check only)")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: ssh-agent-guard [--flags]\n\n")
-		fmt.Fprintf(os.Stderr, "Daemon mode (default):\n")
-		fmt.Fprintf(os.Stderr, "  --listen PATH      proxy socket path\n")
-		fmt.Fprintf(os.Stderr, "  --upstream PATH    upstream agent socket path\n")
-		fmt.Fprintf(os.Stderr, "  --state-dir PATH   state directory for logs\n")
-		fmt.Fprintf(os.Stderr, "  --policy PATH      policy config path\n")
-		fmt.Fprintf(os.Stderr, "  --verbose          log all operations\n")
-		fmt.Fprintf(os.Stderr, "\nCheck mode:\n")
-		fmt.Fprintf(os.Stderr, "  --check            gather caller state and evaluate policy\n")
-		fmt.Fprintf(os.Stderr, "  --pid PID          PID to inspect (default: parent process)\n")
-		fmt.Fprintf(os.Stderr, "  --key FINGERPRINT  key fingerprint for policy matching\n")
-	}
-
-	flag.Parse()
-
-	if check {
-		runCheck(policyPath, checkPID, checkKey)
+	switch ctx.Command() {
+	case "check":
+		ctx.FatalIfErrorf(ctx.Run(&cli))
 		return
 	}
+
+	verbose = cli.Verbose
+	listenPath := cli.Listen
+	upstreamPath := cli.Upstream
+	stateDir := cli.StateDir
+	policyPath := cli.Policy
 
 	errorFile := filepath.Join(stateDir, "config_error.yaml")
 	policy, initialResult := NewPolicy(policyPath)
@@ -68,7 +70,7 @@ func main() {
 	var confirmCfg atomic.Pointer[ConfirmConfig]
 	updateConfirmCfg := func() {
 		cfg := policy.ConfirmConfig()
-		// Override directory paths from --state-dir flag
+		// Override directory paths from --state-dir
 		cfg.ResponseDir = filepath.Join(stateDir, "confirm")
 		cfg.PendingDir = filepath.Join(stateDir, "pending")
 		cfg.DenyPath = filepath.Join(stateDir, "confirm", "denied")

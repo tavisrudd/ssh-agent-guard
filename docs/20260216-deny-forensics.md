@@ -19,7 +19,7 @@ isolated behind clear function boundaries aligned with the planned
 
 ### Always collected (CallerContext, at connect time)
 
-Cheap, useful for `--check` and all log events:
+Cheap, useful for `check` output and all log events:
 
 1. **exe_path** -- `readlink /proc/$pid/exe`.  Catches temp-dir
    binaries, argv[0] spoofing, and distinguishes Nix store paths.
@@ -71,7 +71,7 @@ Calls platform-specific `readProcessAge(pid)` + platform-neutral
 ### Modified: `policy.go`
 
 Add YAML tags to `RuleCheckResult` so it can be used directly in both
-`--check` output and deny forensics logs:
+`check` subcommand output and deny forensics logs:
 
 ```go
 type RuleCheckResult struct {
@@ -224,5 +224,5 @@ No build tags needed yet (consistent with rest of codebase).
    - logEvent YAML includes `forensics:` block when present, omits
      when nil
    - logEvent YAML includes `uid:`, `gid:`, `exe_path:` fields
-4. Manual: `ssh-agent-guard --check` shows `exe_path`
+4. Manual: `ssh-agent-guard check` shows `exe_path`
 5. Manual: trigger a deny and inspect the YAML log for forensics block

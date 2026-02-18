@@ -25,10 +25,10 @@ nix build
 go test -race -count=1 ./...
 
 # Debug policy matching against your current shell
-./ssh-agent-guard --check
+./ssh-agent-guard check
 
 # Check a specific PID
-./ssh-agent-guard --check --pid 12345 --key SHA256:abc123
+./ssh-agent-guard check --pid 12345 --key SHA256:abc123
 ```
 
 ## Code structure

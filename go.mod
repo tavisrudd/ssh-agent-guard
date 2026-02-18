@@ -10,3 +10,5 @@ require (
 	golang.org/x/sys v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require github.com/alecthomas/kong v1.14.0 // indirect

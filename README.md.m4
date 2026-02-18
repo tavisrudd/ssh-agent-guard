@@ -118,15 +118,15 @@ cp examples/policy.yaml ~/.config/ssh-ag/policy.yaml
 
 ```bash
 # See how the proxy views your current shell
-./ssh-agent-guard --check
+./ssh-agent-guard check
 
 # Check a specific process and key
-./ssh-agent-guard --check --pid 12345 --key SHA256:abc123
+./ssh-agent-guard check --pid 12345 --key SHA256:abc123
 ```
 
 ### What you see
 
-**`--check` output** shows how the proxy identifies your process and
+**`check` output** shows how the proxy identifies your process and
 which rules match:
 
 ```yaml

@@ -36,7 +36,7 @@ rules:
 
 Every signing operation is denied unless a rule explicitly allows it.
 Start here if you want maximum control and are willing to add rules
-as you discover new legitimate uses.  Use `--check` and log files to
+as you discover new legitimate uses.  Use `check` and log files to
 find operations that need rules.
 
 ### Default-allow (recommended for getting started)
@@ -314,10 +314,10 @@ default_action: allow
 
 ## Debugging policies
 
-Use `--check` to see how the proxy evaluates your current shell:
+Use the `check` subcommand to see how the proxy evaluates your current shell:
 
 ```
-$ ssh-agent-guard --check
+$ ssh-agent-guard check
 context:
   process_name: bash
   cmdline: /bin/bash
@@ -341,7 +341,7 @@ result:
 To check a specific process:
 
 ```
-$ ssh-agent-guard --check --pid 4521 --key SHA256:abc123
+$ ssh-agent-guard check --pid 4521 --key SHA256:abc123
 ```
 
 ## Confirmation rate limiting

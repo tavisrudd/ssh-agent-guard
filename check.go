@@ -51,7 +51,7 @@ type checkResult struct {
 }
 
 // runCheck gathers caller context and evaluates policy rules, printing results.
-// Used for debugging/testing the proxy's view of processes and rule matching.
+// Used by the check subcommand for debugging process identification and rule matching.
 func runCheck(policyPath string, pid int, keyFingerprint string) {
 	var checkPID int32
 	if pid > 0 {

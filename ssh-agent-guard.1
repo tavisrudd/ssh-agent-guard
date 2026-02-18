@@ -14,7 +14,7 @@ ssh-agent-guard \- policy-enforcing proxy for SSH agent sockets
 [\fB--verbose\fP]
 
 .PP
-\fBssh-agent-guard\fP \fB--check\fP
+\fBssh-agent-guard\fP \fBcheck\fP
 [\fB--pid\fP \fIpid\fP]
 [\fB--key\fP \fIfingerprint\fP]
 [\fB--policy\fP \fIpath\fP]
@@ -78,23 +78,19 @@ Default: \fI~/.config/ssh-ag/policy.yaml\fP\&.
 \fB--verbose\fP
 Log all operations, including key listing requests (normally suppressed).
 
-.SS Check mode
-.TP
-\fB--check\fP
-Gather caller context for a process and evaluate it against the policy,
-printing results as YAML.
+.SS check subcommand
+\fBssh-agent-guard check\fP gathers caller context for a process and evaluates
+it against the policy, printing results as YAML.
 Does not start a daemon.
 Useful for debugging policy rules.
-
 .TP
 \fB--pid\fP \fIpid\fP
-PID to inspect in check mode.
+PID to inspect.
 Default: the parent process (the shell running the command).
 
 .TP
 \fB--key\fP \fIfingerprint\fP
-Key fingerprint (\fISHA256:...\fP) to include in policy evaluation during
-check mode.
+Key fingerprint (\fISHA256:...\fP) to include in policy evaluation.
 
 
 .SH SIGNALS
@@ -122,9 +118,17 @@ Nix wrapper names (\fI\&.foo-wrapped\fP) are unwrapped automatically.
 
 .TP
 \fBEnvironment\fP
-Selected variables from \fI/proc/$pid/environ\fP:
-\fBSSH_CONNECTION\fP, \fBSSH_TTY\fP, \fBDISPLAY\fP, \fBWAYLAND_DISPLAY\fP,
-\fBTERM\fP, \fBTMUX_PANE\fP, \fBCLAUDECODE\fP\&.
+Selected variables from \fI/proc/$pid/environ\fP\&.
+Built-in: \fBSSH_CONNECTION\fP, \fBSSH_TTY\fP, \fBDISPLAY\fP,
+\fBWAYLAND_DISPLAY\fP, \fBTERM\fP, \fBTMUX_PANE\fP, \fBCLAUDECODE\fP\&.
+Additional variables from \fBcapture_extra_env_vars\fP, \fBcoding_agents\fP
+env keys, and rule \fBmatch.env\fP keys are captured automatically.
+
+.TP
+\fBCoding agent\fP
+Detected via configurable heuristics (env vars and ancestor process
+names).  Built-in: Claude, Cursor, Copilot, Aider, Windsurf, Amp, Pi.
+Extensible via the \fBcoding_agents\fP policy section.
 
 .TP
 \fBAncestry\fP
@@ -146,8 +150,11 @@ in ancestry.
 
 .TP
 \fBContainer\fP
-Detected by comparing PID namespaces between proxy and caller via
-\fI/proc/self/ns/pid\fP\&.
+Detected by comparing PID namespaces between proxy and caller.
+All six Linux namespaces (pid, mnt, net, user, uts, cgroup) are
+read and any mismatches are logged, but \fBis_in_container\fP is
+specifically tied to PID namespace mismatch — that's the namespace
+that determines whether \fI/proc/$pid\fP reads are trustworthy.
 
 .TP
 \fBForwarded agent\fP
@@ -184,8 +191,10 @@ unconditionally blocked.
 .IP \(bu 2
 \fBSilent key use\fP — without the proxy, any key operation is
 invisible.  The proxy logs every request with full caller context
-(process name, command line, ancestry, working directory, environment)
-to structured YAML files and journald.
+(process name, command line, exe path, ancestry, working directory,
+environment) to structured YAML files and journald.  Denied requests
+include additional forensics: sign request count, process age, and
+the full rule evaluation trace.
 
 .SS What it does NOT protect against
 .IP \(bu 2
@@ -220,16 +229,19 @@ large PID ranges (kernel.pid_max).
 .IP \(bu 2
 \fBContainer callers with incomplete identity\fP — a container process
 with access to the socket (via bind mount) can connect, but its /proc
-entries may be invisible or in a different PID namespace.  The proxy
-detects PID namespace mismatches and marks such callers as
-\fBcontainer=true\fR, but the caller identity fields (name, command,
-ancestry) may be unavailable.  Policy rules should default to deny or
-confirm for container callers.
+entries may be invisible or wrong when PID namespaces differ.  The
+proxy reads all six Linux namespaces and records mismatches, but
+\fBis_in_container\fR is specifically tied to PID namespace mismatch —
+that's the namespace that affects \fB/proc\fR trust.  Caller identity
+fields (name, command, ancestry) may be unavailable.  Policy rules
+should default to deny or confirm for container callers.
 
 .SS Without socket protection
 Even without filesystem hardening, the proxy provides substantial value:
 .IP \(bu 2
-\fBAudit logging\fP of all signing operations with full caller context
+\fBAudit logging\fP of all signing operations with full caller context,
+plus deny forensics (process age, sign request count, rule trace) on
+denied requests
 .IP \(bu 2
 \fBPhysical confirmation\fP via YubiKey for sensitive operations
 .IP \(bu 2
@@ -562,14 +574,14 @@ ssh-agent-guard \\
 Debug policy matching for the current shell:
 
 .EX
-ssh-agent-guard --check
+ssh-agent-guard check
 .EE
 
 .PP
 Debug policy matching for a specific process and key:
 
 .EX
-ssh-agent-guard --check --pid 12345 --key SHA256:abc123
+ssh-agent-guard check --pid 12345 --key SHA256:abc123
 .EE
 
 .PP

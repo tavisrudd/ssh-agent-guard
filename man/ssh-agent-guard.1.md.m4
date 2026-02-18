@@ -15,7 +15,7 @@ ssh-agent-guard - policy-enforcing proxy for SSH agent sockets
 [**--policy** *path*]
 [**--verbose**]
 
-**ssh-agent-guard** **--check**
+**ssh-agent-guard** **check**
 [**--pid** *pid*]
 [**--key** *fingerprint*]
 [**--policy** *path*]
@@ -71,21 +71,19 @@ Default: *~/.config/ssh-ag/policy.yaml*.
 **--verbose**
 : Log all operations, including key listing requests (normally suppressed).
 
-### Check mode
+### check subcommand
 
-**--check**
-: Gather caller context for a process and evaluate it against the policy,
-printing results as YAML.
+**ssh-agent-guard check** gathers caller context for a process and evaluates
+it against the policy, printing results as YAML.
 Does not start a daemon.
 Useful for debugging policy rules.
 
 **--pid** *pid*
-: PID to inspect in check mode.
+: PID to inspect.
 Default: the parent process (the shell running the command).
 
 **--key** *fingerprint*
-: Key fingerprint (*SHA256:...*) to include in policy evaluation during
-check mode.
+: Key fingerprint (*SHA256:...*) to include in policy evaluation.
 
 # SIGNALS
 
@@ -241,13 +239,13 @@ ssh-agent-guard \
 Debug policy matching for the current shell:
 
 ```
-ssh-agent-guard --check
+ssh-agent-guard check
 ```
 
 Debug policy matching for a specific process and key:
 
 ```
-ssh-agent-guard --check --pid 12345 --key SHA256:abc123
+ssh-agent-guard check --pid 12345 --key SHA256:abc123
 ```
 
 Reload policy after editing:

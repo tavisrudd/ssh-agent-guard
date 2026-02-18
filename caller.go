@@ -223,7 +223,7 @@ func getCallerContext(conn net.Conn) *CallerContext {
 }
 
 // getCallerContextFromPID gathers caller context from /proc for a given PID.
-// Used by both the socket handler (via getCallerContext) and --check mode.
+// Used by both the socket handler (via getCallerContext) and the check subcommand.
 func getCallerContextFromPID(pid int32) *CallerContext {
 	ctx := &CallerContext{
 		PID: pid,

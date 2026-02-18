@@ -70,49 +70,21 @@ Searched before system defaults (\fI/run/current-system/sw/bin\fP,
 .TP
 \fBcapture_extra_env_vars\fP
 List of additional environment variable names to read from
-\fI/proc/$pid/environ\fP\&.
-These are added to the built-in capture list and any variables
-referenced in \fBcoding_agents\fP env heuristics or rule \fBmatch.env\fP
-keys.
-.EX
-capture_extra_env_vars: [MY_CUSTOM_VAR]
-.EE
+\fI/proc/$pid/environ\fP\&.  These are added to the built-in capture list
+and any variables referenced in \fBcoding_agents\fP env heuristics or
+rule \fBmatch.env\fP keys.
 
 .TP
 \fBcoding_agents\fP
-Map of coding agent names to detection heuristics.
-Each agent entry can specify \fBenv\fP (map of env var name to expected
-value) and/or \fBancestors\fP (list of ancestor process names).
-A caller is identified as a coding agent when any heuristic matches.
-.sp
-Built-in agents (always active):
-.RS
-.IP \(bu 3
-\fBclaude\fP: env \fBCLAUDECODE=1\fP
-.IP \(bu 3
-\fBcursor\fP: ancestor \fBcursor\fP
-.IP \(bu 3
-\fBcopilot\fP: ancestor \fBcopilot\fP
-.IP \(bu 3
-\fBaider\fP: ancestor \fBaider\fP
-.IP \(bu 3
-\fBwindsurf\fP: ancestor \fBwindsurf\fP
-.IP \(bu 3
-\fBamp\fP: ancestor \fBamp\fP
-.IP \(bu 3
-\fBpi\fP: ancestor \fBpi\fP
-.RE
-.sp
+Map of coding agent names to detection heuristics.  Each agent
+entry can specify \fBenv\fP (map of env var name to expected value)
+and/or \fBancestors\fP (list of ancestor process names).  A caller is
+identified as a coding agent when any heuristic matches.
+Built-in agents (always active): \fBclaude\fP (env CLAUDECODE=1),
+\fBcursor\fP (ancestor cursor), \fBcopilot\fP (ancestor copilot),
+\fBaider\fP (ancestor aider), \fBwindsurf\fP (ancestor windsurf),
+\fBamp\fP (ancestor amp), \fBpi\fP (ancestor pi).
 User entries are merged additively with builtins.
-.EX
-coding_agents:
-  aider:
-    ancestors: [aider]
-  windsurf:
-    env:
-      WINDSURF_ID: "1"
-    ancestors: [windsurf]
-.EE
 
 .TP
 \fBrules\fP
@@ -267,6 +239,15 @@ Allows matching specific keys without specifying the full fingerprint.
 Glob or regex against the caller's working directory.
 
 .TP
+\fBcgroup:\fP \fIpattern\fP
+Glob or regex against the caller's cgroup path (from
+\fI/proc/$pid/cgroup\fP).  On cgroup v2, this is the path after \fI0::\fP
+(e.g., \fI/user.slice/user-1000.slice/session-1.scope\fP).  On cgroup v1,
+the full first hierarchy line is returned including controller prefix
+(e.g., \fI10:devices:/docker/abc123\fP).  Patterns like \fI*docker*\fP match
+either format.
+
+.TP
 \fBtmux_window:\fP \fIpattern\fP
 Glob or regex against the tmux session:window name (\fImain:claude\fP).
 Resolved from \fBTMUX_PANE\fP in the caller's environment.
@@ -274,19 +255,20 @@ Resolved from \fBTMUX_PANE\fP in the caller's environment.
 .TP
 \fBis_in_container:\fP \fItrue\fP | \fIfalse\fP
 Boolean.
-Whether the caller is in a different PID namespace from the proxy
-(e.g., a container).
-Container callers have incomplete identity — process name, command
-line, and ancestry may be unavailable or refer to wrong processes
-unless the container shares the host PID namespace (\fB--pid=host\fP).
+Whether the caller's PID namespace differs from the proxy's.  When
+true, the proxy cannot fully trust \fI/proc/$pid\fP reads — the caller's
+process name, command line, and ancestry may be unavailable or refer
+to wrong processes.  This is specifically a PID namespace check; other
+namespace mismatches (mnt, net, user, uts, cgroup) are recorded in
+\fBnamespace_mismatches\fP for forensics but do not affect this field.
+Containers share the host PID namespace with \fB--pid=host\fP\&.
 
 .TP
 \fBis_coding_agent:\fP \fItrue\fP | \fIfalse\fP
 Boolean.
 Whether the caller was identified as a coding agent by the
-\fBcoding_agents\fP heuristics (env vars and ancestor process names).
-The detected agent name is available in log events as
-\fBcoding_agent_name\fP\&.
+\fBcoding_agents\fP heuristics.  The detected agent name is available
+in log events as \fBcoding_agent_name\fP\&.
 
 .TP
 \fBenv:\fP \fImap\fP
@@ -294,9 +276,8 @@ Map of environment variable names to expected values.
 All specified variables must match.
 The capture list includes built-in variables (\fBSSH_CONNECTION\fP,
 \fBSSH_TTY\fP, \fBDISPLAY\fP, \fBWAYLAND_DISPLAY\fP, \fBTERM\fP,
-\fBTMUX_PANE\fP, \fBCLAUDECODE\fP) plus any variables from
-\fBcapture_extra_env_vars\fP, \fBcoding_agents\fP env keys, and other
-rules' \fBmatch.env\fP keys.
+\fBTMUX_PANE\fP, \fBCLAUDECODE\fP) plus any from \fBcapture_extra_env_vars\fP,
+\fBcoding_agents\fP env keys, and other rules' \fBmatch.env\fP keys.
 Variables referenced in rules are automatically captured.
 
 
@@ -345,8 +326,6 @@ coding_agents:
 
 rules:
   # Require confirmation for any detected coding agent
-  # (Claude, Cursor, Copilot are detected by default;
-  # aider added above)
   - name: coding-agent-confirm
     match:
       is_coding_agent: true
@@ -401,7 +380,7 @@ An empty \fBmatch\fP section matches all requests.
 If no rule matches, the \fBdefault_action\fP applies.
 
 .PP
-Use \fBssh-agent-guard --check\fP to debug rule evaluation.
+Use \fBssh-agent-guard check\fP to debug rule evaluation.
 It shows which rules matched, which didn't, and why.
 
 

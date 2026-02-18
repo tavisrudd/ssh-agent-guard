@@ -353,7 +353,7 @@ rules:
 4. An empty **match** section matches all requests.
 5. If no rule matches, the **default_action** applies.
 
-Use **ssh-agent-guard --check** to debug rule evaluation.
+Use **ssh-agent-guard check** to debug rule evaluation.
 It shows which rules matched, which didn't, and why.
 
 # POLICY RELOAD

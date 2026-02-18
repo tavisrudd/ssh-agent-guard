@@ -89,7 +89,7 @@ policy section and merged additively with builtins.  See
 catches cases where `argv[0]` has been spoofed — the exe path always
 reflects the real binary.  On NixOS, it distinguishes between store
 paths (e.g., `/nix/store/abc123-openssh-9.6p1/bin/ssh`).  The exe
-path appears in `--check` output and all log events as `exe_path`.
+path appears in `check` output and all log events as `exe_path`.
 
 ### Process age
 
@@ -180,7 +180,7 @@ Policy rules should default to deny or confirm for container
 callers, since their identity fields (name, command, ancestry)
 may be unavailable or incorrect.
 
-`namespace_mismatches` appears in `--check` output and log events.
+`namespace_mismatches` appears in `check` output and log events.
 It lists which of the six namespaces differ (e.g. `[pid, net, user]`
 for a sandboxed browser, or `[pid, mnt, net, user, uts, cgroup]`
 for a fully isolated container).  When no namespaces differ, the
@@ -188,7 +188,7 @@ field is omitted entirely.  The raw namespace inodes are not
 logged — only which namespaces mismatch.
 
 Example: a Chromium zygote process uses pid, net, and user namespace
-sandboxing.  `--check --pid <chromium-pid>` shows:
+sandboxing.  `check --pid <chromium-pid>` shows:
 
 ```yaml
 context:

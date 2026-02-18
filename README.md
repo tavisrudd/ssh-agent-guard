@@ -61,11 +61,11 @@ rules:
       ssh_dest: "git@github.com"
     action: allow
 
-  # AI coding tools — require YubiKey confirmation
-  - name: ai-tools
+  # Coding agents — require YubiKey confirmation
+  # (detects Claude, Cursor, Copilot, Aider, Windsurf, Amp, Pi)
+  - name: coding-agents
     match:
-      env:
-        CLAUDECODE: "1"
+      is_coding_agent: true
     action: confirm
 
   # Forwarded agent to known hosts — allow
@@ -117,15 +117,15 @@ cp examples/policy.yaml ~/.config/ssh-ag/policy.yaml
 
 ```bash
 # See how the proxy views your current shell
-./ssh-agent-guard --check
+./ssh-agent-guard check
 
 # Check a specific process and key
-./ssh-agent-guard --check --pid 12345 --key SHA256:abc123
+./ssh-agent-guard check --pid 12345 --key SHA256:abc123
 ```
 
 ### What you see
 
-**`--check` output** shows how the proxy identifies your process and
+**`check` output** shows how the proxy identifies your process and
 which rules match:
 
 ```yaml
@@ -153,10 +153,10 @@ policy_evaluation:
       action: allow
       matched: false
       mismatches: ["ssh_dest: empty, want git@github.com"]
-    - name: ai-tools
+    - name: coding-agents
       action: confirm
       matched: false
-      mismatches: ["env.CLAUDECODE: empty, want 1"]
+      mismatches: ["is_coding_agent: want true, got false"]
 result:
   action: allow
   rule: default
@@ -409,8 +409,10 @@ authenticate as you — ssh-agent-guard closes that gap.
   unconditionally blocked.
 - **Silent key use** — without the proxy, any key operation is
   invisible.  The proxy logs every request with full caller context
-  (process name, command line, ancestry, working directory, environment)
-  to structured YAML files and journald.
+  (process name, command line, exe path, ancestry, working directory,
+  environment) to structured YAML files and journald.  Denied requests
+  include additional forensics: sign request count, process age, and
+  the full rule evaluation trace.
 
 ### What it does NOT protect against
 
@@ -440,17 +442,20 @@ authenticate as you — ssh-agent-guard closes that gap.
   large PID ranges (kernel.pid_max).
 - **Container callers with incomplete identity** — a container process
   with access to the socket (via bind mount) can connect, but its /proc
-  entries may be invisible or in a different PID namespace.  The proxy
-  detects PID namespace mismatches and marks such callers as
-  `container=true`, but the caller identity fields (name, command,
-  ancestry) may be unavailable.  Policy rules should default to deny or
-  confirm for container callers.
+  entries may be invisible or wrong when PID namespaces differ.  The
+  proxy reads all six Linux namespaces and records mismatches, but
+  `is_in_container` is specifically tied to PID namespace mismatch —
+  that's the namespace that affects `/proc` trust.  Caller identity
+  fields (name, command, ancestry) may be unavailable.  Policy rules
+  should default to deny or confirm for container callers.
 
 ### Without socket protection
 
 Even without filesystem hardening, the proxy provides substantial value:
 
-- **Audit logging** of all signing operations with full caller context
+- **Audit logging** of all signing operations with full caller context,
+  plus deny forensics (process age, sign request count, rule trace) on
+  denied requests
 - **Physical confirmation** via YubiKey for sensitive operations
 - **Policy enforcement** for all software that uses `SSH_AUTH_SOCK`
   (ssh, git, rsync, and nearly all SSH clients)
