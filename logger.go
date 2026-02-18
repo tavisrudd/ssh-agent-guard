@@ -31,8 +31,8 @@ type logEvent struct {
 	DestKeyFingerprint        string            `yaml:"dest_key_fingerprint,omitempty"`
 	LocalCWD                  string            `yaml:"local_cwd"`
 	Cgroup                    string            `yaml:"cgroup,omitempty"`
-	IsForwardedSession        bool              `yaml:"is_forwarded_session"`
-	ForwardedSessionHeuristic string            `yaml:"forwarded_session_heuristic"`
+	UserPresence          string            `yaml:"user_presence"`
+	UserPresenceHeuristic string            `yaml:"user_presence_heuristic"`
 	IsContainer               bool              `yaml:"is_container,omitempty"`
 	NamespaceMismatches       []string          `yaml:"namespace_mismatches,omitempty"`
 	IsCodingAgent             bool              `yaml:"is_coding_agent,omitempty"`
@@ -161,8 +161,8 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 		ForwardedVia:              ctx.ForwardedVia,
 		LocalCWD:                  ctx.CWD,
 		Cgroup:                    ctx.Cgroup,
-		IsForwardedSession:        ctx.IsForwardedSession,
-		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
+		UserPresence:          ctx.UserPresence,
+		UserPresenceHeuristic: ctx.UserPresenceHeuristic,
 		IsContainer:               ctx.IsContainer,
 		NamespaceMismatches:       ctx.NamespaceMismatches,
 		IsCodingAgent:             ctx.IsCodingAgent,
@@ -203,8 +203,8 @@ func buildMutationEvent(ts time.Time, ctx *CallerContext, op string, logPath str
 		ExePath:                   ctx.ExePath,
 		LocalCWD:                  ctx.CWD,
 		Cgroup:                    ctx.Cgroup,
-		IsForwardedSession:        ctx.IsForwardedSession,
-		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
+		UserPresence:          ctx.UserPresence,
+		UserPresenceHeuristic: ctx.UserPresenceHeuristic,
 		IsContainer:               ctx.IsContainer,
 		NamespaceMismatches:       ctx.NamespaceMismatches,
 		IsCodingAgent:             ctx.IsCodingAgent,

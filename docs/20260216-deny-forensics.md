@@ -169,7 +169,7 @@ gid: 1000
 exe_path: /nix/store/abc123-openssh-9.6p1/bin/ssh
 ssh_dest: suspect-host.example.com
 local_cwd: /home/alice/src
-is_forwarded_session: false
+user_presence: local
 decision: deny
 rule: forwarded-unknown
 config_sha256: a1b2c3...

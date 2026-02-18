@@ -321,7 +321,7 @@ Both `pending` and `previous` contain the full `logEvent` structure:
 | `dest_key_fingerprint` | string | Remote host key fingerprint (session-bind)              |
 | `local_cwd`            | string | Caller's working directory                              |
 | `cgroup`               | string | Caller's cgroup path (v2: path after `0::`)             |
-| `is_forwarded_session` | bool   | Whether caller is in a forwarded SSH session            |
+| `user_presence`        | string | `local` or `remote` — where the human user is           |
 | `is_container`         | bool   | PID namespace differs (caller identity untrusted)       |
 | `namespace_mismatches` | list   | Namespaces that differ from proxy's own                 |
 | `decision`             | string | `allow`, `deny`, `confirmed`, `confirm-denied`          |

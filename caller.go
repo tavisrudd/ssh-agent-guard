@@ -174,8 +174,8 @@ type CallerContext struct {
 	ForwardedVia              string // intermediate host (user@host) from mux socket path
 	IsCodingAgent             bool   // any coding agent heuristic matched
 	CodingAgentName           string // which agent matched (e.g. "claude", "cursor")
-	IsForwardedSession        bool   // detected via ForwardedSessionHeuristic
-	ForwardedSessionHeuristic string // how IsForwardedSession was determined
+	UserPresence          string // "local" or "remote", detected via UserPresenceHeuristic
+	UserPresenceHeuristic string // how UserPresence was determined
 	Namespaces          map[string]string // namespace inodes (key=ns name, value=inode)
 	NamespaceMismatches []string          // namespaces that differ from proxy's own
 	IsContainer         bool              // PID namespace differs (caller identity untrusted)
@@ -272,8 +272,8 @@ func getCallerContextFromPID(pid int32) *CallerContext {
 	// session-bind confirms the session is forwarded.
 	ctx.SSHDest = findSSHDest(ctx)
 
-	// Detect forwarded session: sshd in ancestry or SSH_CONNECTION in env
-	ctx.IsForwardedSession = detectForwardedSession(ctx)
+	// Detect user presence: local display or remote SSH session
+	ctx.UserPresence = detectUserPresence(ctx)
 
 	// Detect namespace mismatches (container/namespace isolation)
 	ctx.Namespaces, ctx.NamespaceMismatches, ctx.IsContainer = detectNamespaces(ctx.PID)
@@ -405,11 +405,11 @@ func getParentPID(pid int32) int {
 	return ppid
 }
 
-// detectForwardedSession checks if the caller is running inside a forwarded SSH session.
+// detectUserPresence determines whether the human user is local or remote.
 // For tmux callers, checks tmux's global environment (reflects current attach state).
 // For non-tmux callers, checks /proc/pid/environ and process ancestry.
-// Sets ctx.ForwardedSessionHeuristic to describe how the determination was made.
-func detectForwardedSession(ctx *CallerContext) bool {
+// Sets ctx.UserPresenceHeuristic to describe how the determination was made.
+func detectUserPresence(ctx *CallerContext) string {
 	// If in tmux, the tmux global environment is the source of truth —
 	// it reflects whether the session is currently attached via SSH,
 	// unlike /proc/pid/environ which is frozen at process birth.
@@ -419,28 +419,28 @@ func detectForwardedSession(ctx *CallerContext) bool {
 		if err == nil {
 			line := strings.TrimSpace(string(out))
 			if strings.HasPrefix(line, "SSH_CONNECTION=") {
-				ctx.ForwardedSessionHeuristic = "tmux-env"
-				return true
+				ctx.UserPresenceHeuristic = "tmux-env"
+				return "remote"
 			}
 		}
 		// tmux returned -SSH_CONNECTION (unset) or error — not remote
-		ctx.ForwardedSessionHeuristic = "tmux-env"
-		return false
+		ctx.UserPresenceHeuristic = "tmux-env"
+		return "local"
 	}
 
 	// Not in tmux — fall back to /proc/pid/environ
 	if ctx.Env["SSH_CONNECTION"] != "" {
-		ctx.ForwardedSessionHeuristic = "proc-environ"
-		return true
+		ctx.UserPresenceHeuristic = "proc-environ"
+		return "remote"
 	}
 	for _, a := range ctx.Ancestry {
 		if a.Name == "sshd" {
-			ctx.ForwardedSessionHeuristic = "sshd-ancestry"
-			return true
+			ctx.UserPresenceHeuristic = "sshd-ancestry"
+			return "remote"
 		}
 	}
-	ctx.ForwardedSessionHeuristic = "none"
-	return false
+	ctx.UserPresenceHeuristic = "none"
+	return "local"
 }
 
 // findSSHDest extracts the SSH destination from the connecting process

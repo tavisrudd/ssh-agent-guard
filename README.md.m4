@@ -134,7 +134,7 @@ context:
   process_name: bash
   cmdline: /bin/bash
   local_cwd: /home/alice/src/myproject
-  is_forwarded_session: false
+  user_presence: local
   is_container: false
   tmux_window: "main:code"
   env:
@@ -175,7 +175,7 @@ tmux_window: "main:code"
 key_fingerprint: SHA256:abcdef1234567890abcdef1234567890abcdefgh
 ssh_dest: git@github.com
 local_cwd: /home/alice/src/myproject
-is_forwarded_session: false
+user_presence: local
 decision: allow
 rule: git-hosts
 local_proc_tree:

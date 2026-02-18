@@ -20,8 +20,8 @@ type checkContext struct {
 	Cmdline                   string            `yaml:"cmdline"`
 	LocalCWD                  string            `yaml:"local_cwd"`
 	Cgroup                    string            `yaml:"cgroup,omitempty"`
-	IsForwardedSession        bool              `yaml:"is_forwarded_session"`
-	ForwardedSessionHeuristic string            `yaml:"forwarded_session_heuristic"`
+	UserPresence          string            `yaml:"user_presence"`
+	UserPresenceHeuristic string            `yaml:"user_presence_heuristic"`
 	IsContainer               bool              `yaml:"is_container"`
 	NamespaceMismatches       []string          `yaml:"namespace_mismatches,omitempty"`
 	IsCodingAgent             bool              `yaml:"is_coding_agent"`
@@ -76,8 +76,8 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 		Cmdline:                   ctx.Cmdline,
 		LocalCWD:                  ctx.CWD,
 		Cgroup:                    ctx.Cgroup,
-		IsForwardedSession:        ctx.IsForwardedSession,
-		ForwardedSessionHeuristic: ctx.ForwardedSessionHeuristic,
+		UserPresence:          ctx.UserPresence,
+		UserPresenceHeuristic: ctx.UserPresenceHeuristic,
 		IsContainer:               ctx.IsContainer,
 		NamespaceMismatches:       ctx.NamespaceMismatches,
 		IsCodingAgent:             ctx.IsCodingAgent,

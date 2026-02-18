@@ -109,11 +109,12 @@ remote.  This uses three heuristics:
    `/proc/$pid/environ`.
 3. **Ancestry** -- check for `sshd` in the process tree.
 
-This is surfaced as `is_forwarded_session` in log events and is
-distinct from `is_forwarded` (which specifically means the agent
-*socket* is forwarded via session-bind).
+This is surfaced as `user_presence` (values: `local` or `remote`) in
+log events and check output, and is distinct from `is_forwarded`
+(which specifically means the agent *socket* is forwarded via
+session-bind).
 
-**`is_forwarded_session` is not available as a policy match field.**
+**`user_presence` is not available as a policy match field.**
 It is used internally for confirmation method selection and included
 in log output for forensics, but cannot be used in policy rules.
 

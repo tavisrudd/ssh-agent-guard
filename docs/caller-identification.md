@@ -58,7 +58,7 @@ Variables from sources 3 and 4 are captured automatically -- there
 is no need to also list them in `capture_extra_env_vars`.
 
 These are used for policy matching (`env:` field), coding agent
-detection, and forwarded session detection.
+detection, and user presence detection.
 
 ### Coding agent detection
 
@@ -198,7 +198,7 @@ context:
   cmdline: .../chromium --type=zygote --change-stack-guard-on-fork=enable
   local_cwd: /proc/208824/fdinfo
   cgroup: /user.slice/user-1000.slice/session-17.scope
-  is_forwarded_session: false
+  user_presence: local
   is_container: true
   namespace_mismatches:
     - pid
