@@ -21,7 +21,7 @@ import (
 // builtinCodingAgents defines the default coding agent detection heuristics.
 // These are always active and merge with any user-configured coding_agents.
 var builtinCodingAgents = map[string]CodingAgentYAML{
-	"claude":   {Env: map[string]string{"CLAUDECODE": "1"}},
+	"claude":   {Env: map[string]string{"CLAUDECODE": "1"}, Ancestors: []string{"claude"}},
 	"cursor":   {Ancestors: []string{"cursor"}},
 	"copilot":  {Ancestors: []string{"copilot"}},
 	"aider":    {Ancestors: []string{"aider"}},
