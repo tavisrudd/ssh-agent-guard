@@ -16,15 +16,21 @@ contains:
 2. **A forwarding flag** -- whether the agent socket was forwarded
    from a previous hop.
 
-The proxy intercepts these messages to learn where your keys are
-being used and whether access is forwarded.
+The proxy verifies the host-key signature and records the ordered binding
+chain. A sign request is accepted only when the final binding is for
+authentication and the complete signed user-authentication request matches
+the requested user key and authenticated session. Forwarded chains must use
+OpenSSH hostbound authentication, whose embedded destination host key must
+match the final binding. This prevents a forwarded client from inventing
+destination metadata or applying it to a different connection.
 
 ### What this enables
 
 With session-bind, the proxy can populate three policy fields:
 
-- **`is_forwarded`** -- `true` when the session was forwarded (the
-  remote host is using your agent, not your local machine).
+- **`is_forwarded`** -- `true` when any earlier binding in the verified
+  chain forwarded the agent (the remote host is using your agent, not your
+  local machine).
 - **`ssh_dest`** -- the hostname of the destination, resolved via
   known_hosts reverse lookup (see below).
 - **`is_in_known_hosts`** -- whether the destination host key was

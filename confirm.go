@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"fmt"
@@ -245,6 +246,30 @@ func (c *ConfirmConfig) loadExpectedResponse(serial string) string {
 		}
 	}
 	return ""
+}
+
+// VerifyPIN performs PIN challenge-response inside the daemon. The helper is
+// deliberately not trusted to return an allow/deny verdict.
+func (c *ConfirmConfig) VerifyPIN(ctx context.Context, pin []byte) bool {
+	expectedBytes, err := os.ReadFile(filepath.Join(c.ResponseDir, "slot"+c.PINSlot+".response"))
+	if err != nil {
+		log.Printf("confirm_pin: expected response: %v", err)
+		return false
+	}
+	expected := strings.TrimSpace(string(expectedBytes))
+	if expected == "" {
+		return false
+	}
+
+	cmd := exec.CommandContext(ctx, getResolvedBins().ykchalresp, "-"+c.PINSlot, "-i-")
+	cmd.Stdin = bytes.NewReader(pin)
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("confirm_pin: ykchalresp failed: %v", err)
+		return false
+	}
+	response := strings.TrimSpace(string(out))
+	return subtle.ConstantTimeCompare([]byte(response), []byte(expected)) == 1
 }
 
 // hasActiveDisplay checks whether the local sway session has a usable display.

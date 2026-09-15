@@ -79,12 +79,12 @@ func (a Action) String() string {
 
 // PolicyConfig is the top-level policy file structure.
 type PolicyConfig struct {
-	DefaultAction    string                       `yaml:"default_action"`              // allow, deny, confirm
-	Path             []string                     `yaml:"path,omitempty"`              // extra dirs to search for binaries
-	CaptureExtraEnv  []string                     `yaml:"capture_extra_env_vars,omitempty"` // additional env vars to read from /proc
-	CodingAgents     map[string]CodingAgentYAML   `yaml:"coding_agents,omitempty"`     // per-agent detection heuristics
-	Rules            []Rule                       `yaml:"rules"`
-	Confirm          ConfirmPolicyYAML            `yaml:"confirm,omitempty"`
+	DefaultAction   string                     `yaml:"default_action"`                   // allow, deny, confirm
+	Path            []string                   `yaml:"path,omitempty"`                   // extra dirs to search for binaries
+	CaptureExtraEnv []string                   `yaml:"capture_extra_env_vars,omitempty"` // additional env vars to read from /proc
+	CodingAgents    map[string]CodingAgentYAML `yaml:"coding_agents,omitempty"`          // per-agent detection heuristics
+	Rules           []Rule                     `yaml:"rules"`
+	Confirm         ConfirmPolicyYAML          `yaml:"confirm,omitempty"`
 }
 
 // CodingAgentYAML defines detection heuristics for a single coding agent.
@@ -137,21 +137,21 @@ type Rule struct {
 // MatchSpec defines the conditions for a rule to match.
 // All specified fields must match (AND logic). Unset fields are wildcards.
 type MatchSpec struct {
-	ProcessName        StringOrList      `yaml:"process_name,omitempty"`
-	ParentProcessName  StringOrList      `yaml:"parent_process_name,omitempty"`
-	Ancestor           StringOrList      `yaml:"ancestor,omitempty"`
-	Command            string            `yaml:"command,omitempty"`
-	SSHDest            string            `yaml:"ssh_dest,omitempty"`
-	IsInKnownHosts     *bool             `yaml:"is_in_known_hosts,omitempty"`
-	ForwardedVia       string            `yaml:"forwarded_via,omitempty"`
-	IsForwarded        *bool             `yaml:"is_forwarded,omitempty"`
-	Key                string            `yaml:"key,omitempty"`
-	CWD                string            `yaml:"cwd,omitempty"`
-	Cgroup             string            `yaml:"cgroup,omitempty"`
-	TmuxWindow         string            `yaml:"tmux_window,omitempty"`
-	IsInContainer      *bool             `yaml:"is_in_container,omitempty"`
-	IsCodingAgent      *bool             `yaml:"is_coding_agent,omitempty"`
-	Env                map[string]string `yaml:"env,omitempty"`
+	ProcessName       StringOrList      `yaml:"process_name,omitempty"`
+	ParentProcessName StringOrList      `yaml:"parent_process_name,omitempty"`
+	Ancestor          StringOrList      `yaml:"ancestor,omitempty"`
+	Command           string            `yaml:"command,omitempty"`
+	SSHDest           string            `yaml:"ssh_dest,omitempty"`
+	IsInKnownHosts    *bool             `yaml:"is_in_known_hosts,omitempty"`
+	ForwardedVia      string            `yaml:"forwarded_via,omitempty"`
+	IsForwarded       *bool             `yaml:"is_forwarded,omitempty"`
+	Key               string            `yaml:"key,omitempty"`
+	CWD               string            `yaml:"cwd,omitempty"`
+	Cgroup            string            `yaml:"cgroup,omitempty"`
+	TmuxWindow        string            `yaml:"tmux_window,omitempty"`
+	IsInContainer     *bool             `yaml:"is_in_container,omitempty"`
+	IsCodingAgent     *bool             `yaml:"is_coding_agent,omitempty"`
+	Env               map[string]string `yaml:"env,omitempty"`
 }
 
 // StringOrList handles YAML values that can be a single string or a list.
@@ -259,21 +259,21 @@ type compiledRule struct {
 }
 
 type compiledMatch struct {
-	processName        []string
-	parentProcessName  []string
-	ancestor           []string
-	command            *matchPattern
-	sshDest            *matchPattern
-	isInKnownHosts     *bool
-	forwardedVia       *matchPattern
-	isForwarded        *bool
-	key                string
-	cwd                *matchPattern
-	cgroup             *matchPattern
-	tmuxWindow         *matchPattern
-	isInContainer      *bool
-	isCodingAgent      *bool
-	env                map[string]string
+	processName       []string
+	parentProcessName []string
+	ancestor          []string
+	command           *matchPattern
+	sshDest           *matchPattern
+	isInKnownHosts    *bool
+	forwardedVia      *matchPattern
+	isForwarded       *bool
+	key               string
+	cwd               *matchPattern
+	cgroup            *matchPattern
+	tmuxWindow        *matchPattern
+	isInContainer     *bool
+	isCodingAgent     *bool
+	env               map[string]string
 }
 
 // matchPattern is either a glob or regex pattern.
@@ -408,7 +408,9 @@ func deepGlob(pattern, value string) bool {
 }
 
 func NewPolicy(path string) (*Policy, LoadResult) {
-	p := &Policy{path: path}
+	// Confirm is the safe initial state. Load keeps the previous policy on
+	// errors, so this also makes the very first failed load fail closed.
+	p := &Policy{path: path, defaultAction: Confirm, config: &PolicyConfig{}}
 	result := p.Load()
 	return p, result
 }

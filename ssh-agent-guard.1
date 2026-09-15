@@ -221,6 +221,12 @@ Both scenarios require a process specifically designed to exploit them.
 physical access to your YubiKey (or can socially engineer you into
 touching it), the confirmation can be bypassed.
 .IP \(bu 2
+\fBSame-UID confirmation-state access\fP — PIN confirmation sends the PIN
+through a FIFO in the state directory. The daemon performs the YubiKey
+verification, but a process that can read this directory may steal the PIN
+or disrupt confirmations. Hardened deployments must isolate the state
+directory together with the upstream socket.
+.IP \(bu 2
 \fB/proc races\fP — the proxy reads /proc/$pid/* after obtaining the PID
 via SO_PEERCRED.  If the PID is recycled before the reads complete,
 the proxy may read stale or wrong process information.  PID recycling
@@ -263,11 +269,16 @@ upstream path.
 
 .SH SYSTEM SETUP
 To be effective, the proxy must be the \fIonly\fP path to the SSH agent
-for untrusted processes.  This requires two things:
+for untrusted processes, and its confirmation channel must be private.
+This requires three things:
 .IP "  1." 5
 The upstream agent socket must be inaccessible to normal processes.
 .IP "  2." 5
 \fBSSH_AUTH_SOCK\fR must point to the proxy's listen socket.
+.IP "  3." 5
+The state directory (especially \fBpending/\fR and \fBconfirm/\fR) must be
+inaccessible to untrusted processes. It contains PIN confirmation IPC
+and expected YubiKey responses.
 
 .SS Socket protection with filesystem permissions
 The simplest approach uses directory permissions to hide the upstream
@@ -308,8 +319,9 @@ control on the upstream socket, without requiring a separate user:
 .PP
 \fBLandlock\fP (Linux 5.13+) — an unprivileged LSM that lets a process
 restrict its own filesystem access.  An untrusted process (or its
-launcher) can drop access to the upstream socket directory before
-executing.  No root required, no policy files — just syscalls.
+launcher) can drop access to the upstream socket directory and the guard
+state directory before executing.  No root required, no policy files —
+just syscalls.
 
 .PP
 \fBsystemd sandboxing\fP — user service units support
@@ -322,6 +334,7 @@ services, this is the easiest approach:
 [Service]
 ExecStart=/usr/bin/some-ai-tool
 InaccessiblePaths=/run/user/1000/agent-upstream
+InaccessiblePaths=%h/.local/state/ssh-ag
 .EE
 
 .PP
@@ -347,7 +360,9 @@ unshare -m sh -c \\
 These mechanisms range from lightweight (Landlock, systemd directives)
 to comprehensive (SELinux, mount namespaces).  The 0700 directory is a
 reasonable baseline; the above provide kernel-enforced per-process
-isolation.
+isolation. Protecting only the upstream socket is insufficient when PIN
+confirmation is enabled: access to the state directory can expose the PIN
+IPC or permit confirmation tampering.
 
 .SS Minimal setup (without socket protection)
 If you don't need hard isolation, simply interpose the proxy on the
@@ -428,7 +443,7 @@ enables forwarded agent detection and the \fBssh_dest\fR,
 Without it the guard still works but cannot identify remote
 destinations or detect forwarding.
 .IP \(bu 2
-\fBGo 1.24+\fP — for building from source.
+\fBGo 1.25+\fP — for building from source.
 
 .SS Optional dependencies
 .IP \(bu 2

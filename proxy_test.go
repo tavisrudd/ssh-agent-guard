@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -249,13 +250,7 @@ rules:
 	// Build a session-bind extension message
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
-	hostKeyBlob := hostSigner.PublicKey().Marshal()
-
-	var payload []byte
-	payload = append(payload, makeSSHString(hostKeyBlob)...)
-	payload = append(payload, makeSSHString([]byte("session-id"))...)
-	payload = append(payload, makeSSHString([]byte("signature"))...)
-	payload = append(payload, 0x01) // forwarded=true
+	payload := makeSignedSessionBind(t, hostSigner, []byte("session-id"), true)
 
 	// Send session-bind — should be forwarded to upstream
 	// The upstream keyring doesn't implement Extension, so this returns
@@ -320,13 +315,7 @@ func TestSessionBindForwardedMovesSSHDestToForwardedVia(t *testing.T) {
 	// Build forwarded session-bind
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
-	hostKeyBlob := hostSigner.PublicKey().Marshal()
-
-	var payload []byte
-	payload = append(payload, makeSSHString(hostKeyBlob)...)
-	payload = append(payload, makeSSHString([]byte("session-id"))...)
-	payload = append(payload, makeSSHString([]byte("signature"))...)
-	payload = append(payload, 0x01) // forwarded=true
+	payload := makeSignedSessionBind(t, hostSigner, []byte("session-id"), true)
 
 	proxy.Extension("session-bind@openssh.com", payload)
 
@@ -357,13 +346,7 @@ func TestSessionBindNotForwardedKeepsSSHDest(t *testing.T) {
 
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
-	hostKeyBlob := hostSigner.PublicKey().Marshal()
-
-	var payload []byte
-	payload = append(payload, makeSSHString(hostKeyBlob)...)
-	payload = append(payload, makeSSHString([]byte("session-id"))...)
-	payload = append(payload, makeSSHString([]byte("signature"))...)
-	payload = append(payload, 0x00) // forwarded=false
+	payload := makeSignedSessionBind(t, hostSigner, []byte("session-id"), false)
 
 	proxy.Extension("session-bind@openssh.com", payload)
 
@@ -372,6 +355,152 @@ func TestSessionBindNotForwardedKeepsSSHDest(t *testing.T) {
 	}
 	if caller.ForwardedVia != "" {
 		t.Errorf("ForwardedVia should be empty, got %q", caller.ForwardedVia)
+	}
+}
+
+func TestSessionBindChainRemainsForwarded(t *testing.T) {
+	_, firstPriv, _ := ed25519.GenerateKey(rand.Reader)
+	firstSigner, _ := ssh.NewSignerFromKey(firstPriv)
+	_, finalPriv, _ := ed25519.GenerateKey(rand.Reader)
+	finalSigner, _ := ssh.NewSignerFromKey(finalPriv)
+	_, userPriv, _ := ed25519.GenerateKey(rand.Reader)
+	userSigner, _ := ssh.NewSignerFromKey(userPriv)
+
+	proxy := &ProxyAgent{
+		upstream: &stubExtendedAgent{agent.NewKeyring()},
+		caller:   &CallerContext{Name: "ssh", SSHDest: "bastion.example", Env: map[string]string{}},
+	}
+	if _, err := proxy.Extension("session-bind@openssh.com", makeSignedSessionBind(t, firstSigner, []byte("first-session"), true)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := proxy.Extension("session-bind@openssh.com", makeSignedSessionBind(t, finalSigner, []byte("final-session"), false)); err != nil {
+		t.Fatal(err)
+	}
+	if proxy.session == nil || !proxy.session.IsForwarded {
+		t.Fatal("a forwarding hop was lost when the final authentication binding was added")
+	}
+	validData := makeUserauthData([]byte("final-session"), userSigner.PublicKey(), finalSigner.PublicKey(), true)
+	if err := proxy.validateSessionForSign(validData, userSigner.PublicKey()); err != nil {
+		t.Fatalf("valid final-session sign data rejected: %v", err)
+	}
+	wrongSession := makeUserauthData([]byte("different-session"), userSigner.PublicKey(), finalSigner.PublicKey(), true)
+	if err := proxy.validateSessionForSign(wrongSession, userSigner.PublicKey()); err == nil {
+		t.Fatal("sign data for a different session was accepted")
+	}
+	legacy := makeUserauthData([]byte("final-session"), userSigner.PublicKey(), nil, false)
+	if err := proxy.validateSessionForSign(legacy, userSigner.PublicKey()); err == nil {
+		t.Fatal("legacy publickey authentication was accepted across a forwarded chain")
+	}
+	wrongHost := makeUserauthData([]byte("final-session"), userSigner.PublicKey(), firstSigner.PublicKey(), true)
+	if err := proxy.validateSessionForSign(wrongHost, userSigner.PublicKey()); err == nil {
+		t.Fatal("hostbound authentication for the wrong destination was accepted")
+	}
+}
+
+func TestForgedSessionBindPoisonsConnection(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(priv)
+	payload := makeSignedSessionBind(t, signer, []byte("session"), false)
+	payload[len(payload)-2] ^= 1
+
+	proxy := &ProxyAgent{
+		upstream: &stubExtendedAgent{agent.NewKeyring()},
+		caller:   &CallerContext{Name: "ssh", Env: map[string]string{}},
+	}
+	if _, err := proxy.Extension("session-bind@openssh.com", payload); err == nil {
+		t.Fatal("forged session-bind was accepted")
+	}
+	if err := proxy.validateSessionForSign(makeSSHString([]byte("session")), signer.PublicKey()); err == nil {
+		t.Fatal("signing remained enabled after a forged session-bind")
+	}
+}
+
+func TestSessionBindSequenceViolationsPoisonConnection(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(priv)
+
+	for _, tc := range []struct {
+		name   string
+		first  []byte
+		second []byte
+	}{
+		{
+			name:   "binding after authentication",
+			first:  makeSignedSessionBind(t, signer, []byte("authentication"), false),
+			second: makeSignedSessionBind(t, signer, []byte("later"), true),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy := &ProxyAgent{
+				upstream: &stubExtendedAgent{agent.NewKeyring()},
+				caller:   &CallerContext{Name: "ssh", Env: map[string]string{}},
+			}
+			if _, err := proxy.Extension("session-bind@openssh.com", tc.first); err != nil {
+				t.Fatalf("first binding rejected: %v", err)
+			}
+			if _, err := proxy.Extension("session-bind@openssh.com", tc.second); err == nil {
+				t.Fatal("invalid binding sequence was accepted")
+			}
+			if !proxy.sessionInvalid {
+				t.Fatal("invalid binding sequence did not poison connection")
+			}
+		})
+	}
+
+	proxy := &ProxyAgent{
+		upstream: &stubExtendedAgent{agent.NewKeyring()},
+		caller:   &CallerContext{Name: "ssh", Env: map[string]string{}},
+	}
+	duplicate := makeSignedSessionBind(t, signer, []byte("duplicate"), true)
+	if _, err := proxy.Extension("session-bind@openssh.com", duplicate); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := proxy.Extension("session-bind@openssh.com", duplicate); err != nil {
+		t.Fatalf("idempotent duplicate binding rejected: %v", err)
+	}
+	_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
+	otherSigner, _ := ssh.NewSignerFromKey(otherPriv)
+	if _, err := proxy.Extension("session-bind@openssh.com", makeSignedSessionBind(t, otherSigner, []byte("duplicate"), true)); err == nil {
+		t.Fatal("session ID rebound to a different host key")
+	}
+}
+
+func TestSessionBindCountIsBounded(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(priv)
+	proxy := &ProxyAgent{
+		upstream: &stubExtendedAgent{agent.NewKeyring()},
+		caller:   &CallerContext{Name: "ssh", Env: map[string]string{}},
+	}
+	for i := 0; i < maxSessionBindings; i++ {
+		sid := []byte(fmt.Sprintf("session-%d", i))
+		if _, err := proxy.Extension("session-bind@openssh.com", makeSignedSessionBind(t, signer, sid, true)); err != nil {
+			t.Fatalf("binding %d rejected: %v", i, err)
+		}
+	}
+	if _, err := proxy.Extension("session-bind@openssh.com", makeSignedSessionBind(t, signer, []byte("one-too-many"), false)); err == nil {
+		t.Fatal("binding beyond the configured limit was accepted")
+	}
+}
+
+func TestSessionBindSucceedsWhenUpstreamDoesNotSupportIt(t *testing.T) {
+	policy := newTestPolicy(t, "default_action: allow\nrules: []\n")
+	client, cleanup := testProxy(t, policy)
+	defer cleanup()
+
+	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
+	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
+	sessionID := []byte("authenticated-session")
+	if _, err := client.Extension("session-bind@openssh.com", makeSignedSessionBind(t, hostSigner, sessionID, false)); err != nil {
+		t.Fatalf("proxy did not acknowledge its internally verified session-bind: %v", err)
+	}
+	keys, err := client.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := makeUserauthData(sessionID, keys[0], nil, false)
+	if _, err := client.Sign(keys[0], data); err != nil {
+		t.Fatalf("signing for the bound session failed: %v", err)
 	}
 }
 

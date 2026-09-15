@@ -16,35 +16,35 @@ import (
 // logEvent is the unified YAML structure for sign/mutation log files
 // and the pending/previous sections of current.yaml.
 type logEvent struct {
-	Timestamp                 string            `yaml:"timestamp"`
-	Trigger                   string            `yaml:"trigger"`
-	ProcessName               string            `yaml:"process_name"`
-	LocalPID                  int32             `yaml:"local_pid"`
-	UID                       uint32            `yaml:"uid,omitempty"`
-	GID                       uint32            `yaml:"gid,omitempty"`
-	ExePath                   string            `yaml:"exe_path,omitempty"`
-	TmuxWindow                string            `yaml:"tmux_window,omitempty"`
-	KeyFingerprint            string            `yaml:"key_fingerprint,omitempty"`
-	SSHDest                   string            `yaml:"ssh_dest,omitempty"`
-	ForwardedVia              string            `yaml:"forwarded_via,omitempty"`
-	IsForwarded               *bool             `yaml:"is_forwarded,omitempty"`
-	DestKeyFingerprint        string            `yaml:"dest_key_fingerprint,omitempty"`
-	LocalCWD                  string            `yaml:"local_cwd"`
-	Cgroup                    string            `yaml:"cgroup,omitempty"`
+	Timestamp             string            `yaml:"timestamp"`
+	Trigger               string            `yaml:"trigger"`
+	ProcessName           string            `yaml:"process_name"`
+	LocalPID              int32             `yaml:"local_pid"`
+	UID                   uint32            `yaml:"uid,omitempty"`
+	GID                   uint32            `yaml:"gid,omitempty"`
+	ExePath               string            `yaml:"exe_path,omitempty"`
+	TmuxWindow            string            `yaml:"tmux_window,omitempty"`
+	KeyFingerprint        string            `yaml:"key_fingerprint,omitempty"`
+	SSHDest               string            `yaml:"ssh_dest,omitempty"`
+	ForwardedVia          string            `yaml:"forwarded_via,omitempty"`
+	IsForwarded           *bool             `yaml:"is_forwarded,omitempty"`
+	DestKeyFingerprint    string            `yaml:"dest_key_fingerprint,omitempty"`
+	LocalCWD              string            `yaml:"local_cwd"`
+	Cgroup                string            `yaml:"cgroup,omitempty"`
 	UserPresence          string            `yaml:"user_presence"`
 	UserPresenceHeuristic string            `yaml:"user_presence_heuristic"`
-	IsContainer               bool              `yaml:"is_container,omitempty"`
-	NamespaceMismatches       []string          `yaml:"namespace_mismatches,omitempty"`
-	IsCodingAgent             bool              `yaml:"is_coding_agent,omitempty"`
-	CodingAgentName           string            `yaml:"coding_agent_name,omitempty"`
-	Decision                  string            `yaml:"decision"`
-	Rule                      string            `yaml:"rule,omitempty"`
-	ConfirmMethod             string            `yaml:"confirm_method,omitempty"`
-	LogFile                   string            `yaml:"log_file,omitempty"`
-	ConfigSHA256              string            `yaml:"config_sha256,omitempty"`
-	Env                       map[string]string `yaml:"env,omitempty"`
-	LocalProcTree             []logAncestor     `yaml:"local_proc_tree,omitempty"`
-	Forensics                 *DenyForensics    `yaml:"forensics,omitempty"`
+	IsContainer           bool              `yaml:"is_container,omitempty"`
+	NamespaceMismatches   []string          `yaml:"namespace_mismatches,omitempty"`
+	IsCodingAgent         bool              `yaml:"is_coding_agent,omitempty"`
+	CodingAgentName       string            `yaml:"coding_agent_name,omitempty"`
+	Decision              string            `yaml:"decision"`
+	Rule                  string            `yaml:"rule,omitempty"`
+	ConfirmMethod         string            `yaml:"confirm_method,omitempty"`
+	LogFile               string            `yaml:"log_file,omitempty"`
+	ConfigSHA256          string            `yaml:"config_sha256,omitempty"`
+	Env                   map[string]string `yaml:"env,omitempty"`
+	LocalProcTree         []logAncestor     `yaml:"local_proc_tree,omitempty"`
+	Forensics             *DenyForensics    `yaml:"forensics,omitempty"`
 }
 
 type logAncestor struct {
@@ -102,12 +102,12 @@ type badConfigEntry struct {
 // Logger writes event detail files (YAML) and maintains current.yaml
 // via an external render helper, following the same patterns as gpg-log-caller.
 type Logger struct {
-	stateDir        string
-	renderBin       string
-	mu              sync.Mutex
-	previous        *logEvent // stored for current.yaml previous section
-	policy          *Policy   // for config status in current.yaml
-	lastLoggedSHA   string    // SHA256 of last config snapshot written (skip duplicates)
+	stateDir      string
+	renderBin     string
+	mu            sync.Mutex
+	previous      *logEvent // stored for current.yaml previous section
+	policy        *Policy   // for config status in current.yaml
+	lastLoggedSHA string    // SHA256 of last config snapshot written (skip duplicates)
 }
 
 func NewLogger(stateDir string, policy *Policy) *Logger {
@@ -148,31 +148,31 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 	}
 
 	ev := &logEvent{
-		Timestamp:                 ts.Format("2006-01-02T15:04:05"),
-		Trigger:                   "sign",
-		ProcessName:               ctx.Name,
-		LocalPID:                  ctx.PID,
-		UID:                       ctx.UID,
-		GID:                       ctx.GID,
-		ExePath:                   ctx.ExePath,
-		TmuxWindow:                ctx.TmuxWindow,
-		KeyFingerprint:            fingerprint,
-		SSHDest:                   dest,
-		ForwardedVia:              ctx.ForwardedVia,
-		LocalCWD:                  ctx.CWD,
-		Cgroup:                    ctx.Cgroup,
+		Timestamp:             ts.Format("2006-01-02T15:04:05"),
+		Trigger:               "sign",
+		ProcessName:           ctx.Name,
+		LocalPID:              ctx.PID,
+		UID:                   ctx.UID,
+		GID:                   ctx.GID,
+		ExePath:               ctx.ExePath,
+		TmuxWindow:            ctx.TmuxWindow,
+		KeyFingerprint:        fingerprint,
+		SSHDest:               dest,
+		ForwardedVia:          ctx.ForwardedVia,
+		LocalCWD:              ctx.CWD,
+		Cgroup:                ctx.Cgroup,
 		UserPresence:          ctx.UserPresence,
 		UserPresenceHeuristic: ctx.UserPresenceHeuristic,
-		IsContainer:               ctx.IsContainer,
-		NamespaceMismatches:       ctx.NamespaceMismatches,
-		IsCodingAgent:             ctx.IsCodingAgent,
-		CodingAgentName:           ctx.CodingAgentName,
-		Decision:                  decision,
-		Rule:                      result.RuleName,
-		ConfirmMethod:             result.ConfirmMethod,
-		LogFile:                   logPath,
-		Env:                       ctx.Env,
-		Forensics:                 forensics,
+		IsContainer:           ctx.IsContainer,
+		NamespaceMismatches:   ctx.NamespaceMismatches,
+		IsCodingAgent:         ctx.IsCodingAgent,
+		CodingAgentName:       ctx.CodingAgentName,
+		Decision:              decision,
+		Rule:                  result.RuleName,
+		ConfirmMethod:         result.ConfirmMethod,
+		LogFile:               logPath,
+		Env:                   ctx.Env,
+		Forensics:             forensics,
 	}
 
 	if session != nil {
@@ -194,24 +194,24 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 // buildMutationEvent creates a logEvent for a blocked mutation operation.
 func buildMutationEvent(ts time.Time, ctx *CallerContext, op string, logPath string, forensics *DenyForensics) *logEvent {
 	ev := &logEvent{
-		Timestamp:                 ts.Format("2006-01-02T15:04:05"),
-		Trigger:                   op,
-		ProcessName:               ctx.Name,
-		LocalPID:                  ctx.PID,
-		UID:                       ctx.UID,
-		GID:                       ctx.GID,
-		ExePath:                   ctx.ExePath,
-		LocalCWD:                  ctx.CWD,
-		Cgroup:                    ctx.Cgroup,
+		Timestamp:             ts.Format("2006-01-02T15:04:05"),
+		Trigger:               op,
+		ProcessName:           ctx.Name,
+		LocalPID:              ctx.PID,
+		UID:                   ctx.UID,
+		GID:                   ctx.GID,
+		ExePath:               ctx.ExePath,
+		LocalCWD:              ctx.CWD,
+		Cgroup:                ctx.Cgroup,
 		UserPresence:          ctx.UserPresence,
 		UserPresenceHeuristic: ctx.UserPresenceHeuristic,
-		IsContainer:               ctx.IsContainer,
-		NamespaceMismatches:       ctx.NamespaceMismatches,
-		IsCodingAgent:             ctx.IsCodingAgent,
-		CodingAgentName:           ctx.CodingAgentName,
-		Decision:                  "deny",
-		LogFile:                   logPath,
-		Forensics:                 forensics,
+		IsContainer:           ctx.IsContainer,
+		NamespaceMismatches:   ctx.NamespaceMismatches,
+		IsCodingAgent:         ctx.IsCodingAgent,
+		CodingAgentName:       ctx.CodingAgentName,
+		Decision:              "deny",
+		LogFile:               logPath,
+		Forensics:             forensics,
 	}
 
 	for _, a := range ctx.Ancestry {

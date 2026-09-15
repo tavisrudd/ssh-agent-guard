@@ -159,26 +159,26 @@ func extractMuxVia(cmdline string) string {
 // Gathered immediately on accept() via SO_PEERCRED + /proc, before the process
 // can exit.
 type CallerContext struct {
-	PID        int32
-	UID        uint32
-	GID        uint32
-	Name       string            // process name (nix-unwrapped)
-	ExePath    string            // resolved executable path (/proc/$pid/exe)
-	Cmdline    string            // full command line
-	CWD        string            // working directory
-	Cgroup     string            // cgroup path (/proc/$pid/cgroup)
-	Env        map[string]string // selected environment variables
-	TmuxWindow string            // resolved from TMUX_PANE
-	Ancestry   []AncestorInfo    // process tree (self → init)
-	SSHDest                   string // extracted from ssh cmdline
-	ForwardedVia              string // intermediate host (user@host) from mux socket path
-	IsCodingAgent             bool   // any coding agent heuristic matched
-	CodingAgentName           string // which agent matched (e.g. "claude", "cursor")
-	UserPresence          string // "local" or "remote", detected via UserPresenceHeuristic
-	UserPresenceHeuristic string // how UserPresence was determined
-	Namespaces          map[string]string // namespace inodes (key=ns name, value=inode)
-	NamespaceMismatches []string          // namespaces that differ from proxy's own
-	IsContainer         bool              // PID namespace differs (caller identity untrusted)
+	PID                   int32
+	UID                   uint32
+	GID                   uint32
+	Name                  string            // process name (nix-unwrapped)
+	ExePath               string            // resolved executable path (/proc/$pid/exe)
+	Cmdline               string            // full command line
+	CWD                   string            // working directory
+	Cgroup                string            // cgroup path (/proc/$pid/cgroup)
+	Env                   map[string]string // selected environment variables
+	TmuxWindow            string            // resolved from TMUX_PANE
+	Ancestry              []AncestorInfo    // process tree (self → init)
+	SSHDest               string            // extracted from ssh cmdline
+	ForwardedVia          string            // intermediate host (user@host) from mux socket path
+	IsCodingAgent         bool              // any coding agent heuristic matched
+	CodingAgentName       string            // which agent matched (e.g. "claude", "cursor")
+	UserPresence          string            // "local" or "remote", detected via UserPresenceHeuristic
+	UserPresenceHeuristic string            // how UserPresence was determined
+	Namespaces            map[string]string // namespace inodes (key=ns name, value=inode)
+	NamespaceMismatches   []string          // namespaces that differ from proxy's own
+	IsContainer           bool              // PID namespace differs (caller identity untrusted)
 }
 
 type AncestorInfo struct {

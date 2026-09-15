@@ -20,7 +20,7 @@
             pname = "ssh-agent-guard";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-6ffZhfI5d10DJIUm0JOLz8gZcEjY9zAX6P3M4HrrZ+w=";
+            vendorHash = "sha256-xF4ytT6b40VVRaXhSCkEisdWjA3yRAFTMQgqHMWkc9Q=";
             ldflags = [ "-s" "-w" ];
 
             nativeBuildInputs = [ pkgs.makeWrapper ];

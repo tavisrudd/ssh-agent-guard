@@ -48,6 +48,11 @@ authenticate as you — ssh-agent-guard closes that gap.
 - **YubiKey coercion** — if confirmation is required and an attacker has
   physical access to your YubiKey (or can socially engineer you into
   touching it), the confirmation can be bypassed.
+- **Same-UID confirmation-state access** — PIN confirmation sends the PIN
+  through a FIFO in the state directory. The daemon performs the YubiKey
+  verification, but a process that can read this directory may steal the PIN
+  or disrupt confirmations. Hardened deployments must isolate the state
+  directory together with the upstream socket.
 - **/proc races** — the proxy reads /proc/$pid/\* after obtaining the PID
   via SO_PEERCRED.  If the PID is recycled before the reads complete,
   the proxy may read stale or wrong process information.  PID recycling

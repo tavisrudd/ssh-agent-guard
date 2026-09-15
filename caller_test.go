@@ -104,7 +104,6 @@ func TestExtractSSHDest(t *testing.T) {
 	}
 }
 
-
 func TestExtractMuxVia(t *testing.T) {
 	tests := []struct {
 		name        string

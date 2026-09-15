@@ -2,8 +2,8 @@
 # ssh-ag-confirm — remote confirmation helper for ssh-agent-guard
 #
 # Activated by a tmux keybinding (e.g. prefix+C). Finds the latest pending
-# confirmation request, displays details, prompts for a PIN, verifies it
-# via YubiKey HMAC slot 1 (no touch required), and writes the result to a FIFO.
+# confirmation request, displays details, prompts for a PIN, and sends it to
+# the daemon, which verifies it via YubiKey HMAC and decides the result.
 #
 # Usage: ssh-ag-confirm
 #   (no args — finds latest pending request automatically)
@@ -23,14 +23,6 @@ done
 
 STATE_DIR="$HOME/.local/state/ssh-ag"
 PENDING_DIR="$STATE_DIR/pending"
-CONFIRM_DIR="$STATE_DIR/confirm"
-
-# Load PIN slot config (written by ssh-agent-guard on policy load)
-PIN_SLOT=1  # default
-if [ -f "$CONFIRM_DIR/pin.env" ]; then
-    # shellcheck source=/dev/null
-    . "$CONFIRM_DIR/pin.env"
-fi
 
 # Find request and FIFO — either from args or latest pending
 if [ $# -ge 2 ]; then
@@ -101,40 +93,6 @@ echo "  Key:     ${KEY:-unknown}"
 [ -n "${CWD:-}" ] && echo "  CWD:     $CWD"
 echo ""
 
-# Load expected HMAC response for the configured PIN slot
-EXPECTED=""
-RESPONSE_FILE="$CONFIRM_DIR/slot${PIN_SLOT}.response"
-if [ -f "$RESPONSE_FILE" ]; then
-    EXPECTED=$(cat "$RESPONSE_FILE")
-fi
-
-if [ -z "$EXPECTED" ]; then
-    echo "  ERROR: no slot${PIN_SLOT}.response file in $CONFIRM_DIR"
-    sleep 2
-    echo "deny" > "$FIFO"
-    wrote_result=true
-    exit 1
-fi
-
-# Find ykchalresp
-YKCHALRESP=""
-for p in /run/current-system/sw/bin/ykchalresp /usr/bin/ykchalresp; do
-    if [ -x "$p" ]; then
-        YKCHALRESP="$p"
-        break
-    fi
-done
-if [ -z "$YKCHALRESP" ]; then
-    YKCHALRESP=$(command -v ykchalresp 2>/dev/null || true)
-fi
-if [ -z "$YKCHALRESP" ]; then
-    echo "  ERROR: ykchalresp not found"
-    sleep 2
-    echo "deny" > "$FIFO"
-    wrote_result=true
-    exit 1
-fi
-
 # Prompt for PIN
 echo -n "  PIN: "
 read -rs PIN
@@ -148,26 +106,17 @@ if [ -z "$PIN" ]; then
     exit 0
 fi
 
-# Verify PIN via configured HMAC slot (no touch required)
-RESPONSE=$(echo -n "$PIN" | "$YKCHALRESP" -"$PIN_SLOT" -i- 2>/dev/null) || true
-
-if [ "$RESPONSE" = "$EXPECTED" ]; then
-    echo "  Confirmed."
-    # Include nonce in response to prove we read the request file (0600).
-    # Prevents a same-user attacker from blindly writing "allow" to the FIFO.
-    # The daemon requires the nonce — bare "allow" is rejected.
-    if [ -z "${NONCE:-}" ]; then
-        echo "  ERROR: nonce missing from request file — cannot confirm"
-        sleep 2
-        echo "deny" > "$FIFO"
-        wrote_result=true
-        exit 1
-    fi
-    echo "allow $NONCE" > "$FIFO"
-    wrote_result=true
-else
-    echo "  PIN incorrect."
-    sleep 1
+# The daemon, not this helper, verifies the PIN against the YubiKey.
+if [ -z "${NONCE:-}" ]; then
+    echo "  ERROR: nonce missing from request file — cannot confirm"
+    sleep 2
     echo "deny" > "$FIFO"
     wrote_result=true
+    exit 1
 fi
+PIN_B64=$(printf '%s' "$PIN" | base64 | tr -d '\n')
+printf 'pin %s %s\n' "$NONCE" "$PIN_B64" > "$FIFO"
+wrote_result=true
+PIN=""
+PIN_B64=""
+echo "  Submitted for verification."

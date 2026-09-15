@@ -1,8 +1,12 @@
 To be effective, the proxy must be the *only* path to the SSH agent
-for untrusted processes.  This requires two things:
+for untrusted processes, and its confirmation channel must be private.
+This requires three things:
 
 1. The upstream agent socket must be inaccessible to normal processes.
 2. `SSH_AUTH_SOCK` must point to the proxy's listen socket.
+3. The state directory (especially `pending/` and `confirm/`) must be
+   inaccessible to untrusted processes. It contains PIN confirmation IPC
+   and expected YubiKey responses.
 
 ### Socket protection with filesystem permissions
 
@@ -42,8 +46,9 @@ control on the upstream socket, without requiring a separate user:
 
 **Landlock** (Linux 5.13+) — an unprivileged LSM that lets a process
 restrict its own filesystem access.  An untrusted process (or its
-launcher) can drop access to the upstream socket directory before
-executing.  No root required, no policy files — just syscalls.
+launcher) can drop access to the upstream socket directory and the guard
+state directory before executing.  No root required, no policy files —
+just syscalls.
 
 **systemd sandboxing** — user service units support
 `InaccessiblePaths=` which makes paths invisible to that service.
@@ -55,6 +60,7 @@ services, this is the easiest approach:
 [Service]
 ExecStart=/usr/bin/some-ai-tool
 InaccessiblePaths=/run/user/1000/agent-upstream
+InaccessiblePaths=%h/.local/state/ssh-ag
 ```
 
 **AppArmor / SELinux** — mandatory access control policies can
@@ -77,7 +83,9 @@ unshare -m sh -c \
 These mechanisms range from lightweight (Landlock, systemd directives)
 to comprehensive (SELinux, mount namespaces).  The 0700 directory is a
 reasonable baseline; the above provide kernel-enforced per-process
-isolation.
+isolation. Protecting only the upstream socket is insufficient when PIN
+confirmation is enabled: access to the state directory can expose the PIN
+IPC or permit confirmation tampering.
 
 ### Minimal setup (without socket protection)
 

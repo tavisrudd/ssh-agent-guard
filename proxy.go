@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync/atomic"
 
@@ -15,18 +17,22 @@ import (
 // same-user processes from flooding the confirmation UI.
 var pendingConfirms atomic.Int32
 
+const maxSessionBindings = 16
+
 // ProxyAgent wraps an upstream ExtendedAgent, intercepting operations
 // for logging and policy enforcement. One instance per client connection.
 type ProxyAgent struct {
-	upstream   agent.ExtendedAgent
-	caller     *CallerContext
-	logger     *Logger
-	knownHosts *KnownHostsResolver
-	policy     *Policy
-	confirmCfg *ConfirmConfig
-	session    *SessionBindInfo // most recent session-bind on this connection
-	ctx        context.Context  // cancelled when client connection closes
-	signCount  int              // number of sign requests on this connection
+	upstream       agent.ExtendedAgent
+	caller         *CallerContext
+	logger         *Logger
+	knownHosts     *KnownHostsResolver
+	policy         *Policy
+	confirmCfg     *ConfirmConfig
+	session        *SessionBindInfo // aggregate context for the authenticated binding chain
+	bindings       []*SessionBindInfo
+	sessionInvalid bool
+	ctx            context.Context // cancelled when client connection closes
+	signCount      int             // number of sign requests on this connection
 }
 
 var errNotPermitted = errors.New("operation not permitted through proxy")
@@ -47,7 +53,7 @@ func (p *ProxyAgent) List() ([]*agent.Key, error) {
 // but we implement Sign for interface completeness.
 func (p *ProxyAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 	p.signCount++
-	result := p.evalAndConfirm(key)
+	result := p.evalAndConfirm(key, data)
 	if result.Action == Deny {
 		return nil, errNotPermitted
 	}
@@ -58,7 +64,7 @@ func (p *ProxyAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error
 // any ExtendedAgent when processing SSH_AGENTC_SIGN_REQUEST.
 func (p *ProxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
 	p.signCount++
-	result := p.evalAndConfirm(key)
+	result := p.evalAndConfirm(key, data)
 	if result.Action == Deny {
 		return nil, errNotPermitted
 	}
@@ -70,8 +76,16 @@ func (p *ProxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.S
 //   - Active display → YubiKey touch ("touch")
 //   - No display + YubiKey → PIN via tmux popup ("pin")
 //   - No display + no YubiKey → deny ("missing")
-func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey) EvalResult {
+func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 	keyFP := ssh.FingerprintSHA256(key)
+	if err := p.validateSessionForSign(data, key); err != nil {
+		result := EvalResult{Action: Deny, RuleName: "session-bind-validation"}
+		log.Printf("sign: invalid session binding for %s pid=%d: %v", p.caller.Name, p.caller.PID, err)
+		p.logger.UpdateSignStatus(p.caller, key, p.session, result)
+		forensics := collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount)
+		p.logger.LogSign(p.caller, key, p.session, result, forensics)
+		return result
+	}
 	result := p.policy.Evaluate(p.caller, p.session, keyFP)
 
 	// Update status bar immediately
@@ -149,7 +163,6 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey) EvalResult {
 	return result
 }
 
-
 // Key management operations are blocked through the proxy.
 // Keys are managed directly on gpg-agent (via smartcard/scdaemon).
 
@@ -189,26 +202,49 @@ func (p *ProxyAgent) Signers() ([]ssh.Signer, error) {
 // for forwarded agent requests.
 func (p *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
 	if extensionType == "session-bind@openssh.com" {
+		if len(p.bindings) >= maxSessionBindings {
+			err := fmt.Errorf("too many session bindings (maximum %d)", maxSessionBindings)
+			p.poisonSession("sequence", err)
+			return nil, errNotPermitted
+		}
 		info, err := parseSessionBind(contents)
 		if err != nil {
-			// Fail closed: treat unparseable session-bind as forwarded with
-			// unknown destination so that is_forwarded/is_in_known_hosts deny
-			// rules still fire rather than being silently skipped.
-			log.Printf("session-bind parse: %v (treating as forwarded/unknown)", err)
-			p.session = &SessionBindInfo{
-				IsForwarded: true,
+			p.poisonSession("parse/verify", err)
+			return nil, errNotPermitted
+		}
+		duplicate, err := p.validateNextBinding(info)
+		if err != nil {
+			p.poisonSession("sequence", err)
+			return nil, errNotPermitted
+		}
+
+		// Preserve destination constraints in an upstream OpenSSH agent when it
+		// supports session-bind. Agents such as gpg-agent commonly do not.
+		response, upstreamErr := p.upstream.Extension(extensionType, contents)
+		if upstreamErr != nil && !errors.Is(upstreamErr, agent.ErrExtensionUnsupported) {
+			p.poisonSession("upstream rejection", upstreamErr)
+			return nil, upstreamErr
+		}
+
+		if duplicate {
+			if upstreamErr != nil {
+				return []byte{6}, nil
 			}
-		} else {
-			// Resolve hostname from known_hosts
-			if p.knownHosts != nil {
-				info.DestHostname = p.knownHosts.Resolve(info.DestKeyFingerprint)
-			}
-			p.session = info
-			if verbose {
-				log.Printf("session-bind: dest=%s fp=%s forwarded=%v caller=%s pid=%d",
-					info.DestHostname, info.DestKeyFingerprint[:19], info.IsForwarded,
-					p.caller.Name, p.caller.PID)
-			}
+			return response, nil
+		}
+		if p.knownHosts != nil {
+			info.DestHostname = p.knownHosts.Resolve(info.DestKeyFingerprint)
+		}
+		p.bindings = append(p.bindings, info)
+		info.IsForwarded = info.BindingForwarded
+		for _, binding := range p.bindings[:len(p.bindings)-1] {
+			info.IsForwarded = info.IsForwarded || binding.BindingForwarded
+		}
+		p.session = info
+		if verbose {
+			log.Printf("session-bind: dest=%s fp=%s forwarded-chain=%v caller=%s pid=%d",
+				info.DestHostname, info.DestKeyFingerprint[:19], info.IsForwarded,
+				p.caller.Name, p.caller.PID)
 		}
 
 		// When the session is forwarded, the local SSH process's cmdline
@@ -228,8 +264,56 @@ func (p *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, e
 				p.caller.ForwardedVia = via
 			}
 		}
+		if upstreamErr != nil {
+			// SSH_AGENT_SUCCESS. x/crypto intentionally keeps this protocol
+			// constant private, but Extension responses are raw agent messages.
+			return []byte{6}, nil
+		}
+		return response, nil
 	} else if verbose {
 		log.Printf("extension: type=%s caller=%s pid=%d", extensionType, p.caller.Name, p.caller.PID)
 	}
 	return p.upstream.Extension(extensionType, contents)
+}
+
+func (p *ProxyAgent) poisonSession(stage string, err error) {
+	p.sessionInvalid = true
+	p.session = &SessionBindInfo{IsForwarded: true, BindingForwarded: true}
+	if p.caller.SSHDest != "" {
+		p.caller.ForwardedVia = p.caller.SSHDest
+		p.caller.SSHDest = ""
+	}
+	log.Printf("session-bind %s: %v (connection poisoned)", stage, err)
+}
+
+func (p *ProxyAgent) validateNextBinding(info *SessionBindInfo) (bool, error) {
+	if p.sessionInvalid {
+		return false, errors.New("an earlier session-bind failed")
+	}
+	for _, binding := range p.bindings {
+		if bytes.Equal(binding.SessionID, info.SessionID) {
+			if bytes.Equal(binding.HostKeyBlob, info.HostKeyBlob) {
+				return true, nil
+			}
+			return false, errors.New("session identifier is bound to a different host key")
+		}
+	}
+	if len(p.bindings) > 0 && !p.bindings[len(p.bindings)-1].BindingForwarded {
+		return false, errors.New("cannot extend a connection already bound for authentication")
+	}
+	return false, nil
+}
+
+func (p *ProxyAgent) validateSessionForSign(data []byte, key ssh.PublicKey) error {
+	if p.sessionInvalid {
+		return errors.New("session-bind validation previously failed")
+	}
+	if len(p.bindings) == 0 {
+		return nil
+	}
+	last := p.bindings[len(p.bindings)-1]
+	if last.BindingForwarded {
+		return errors.New("last binding is for forwarding, not authentication")
+	}
+	return validateUserauthSignData(data, last, key, p.session.IsForwarded)
 }

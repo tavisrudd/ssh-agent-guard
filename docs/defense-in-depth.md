@@ -77,13 +77,17 @@ Landlock (unprivileged, no root needed), systemd
 ## Confirmation rate limiting
 
 A same-user process can spam sign requests that trigger confirmation
-prompts, degrading the user experience without gaining access (each
-confirmation is independently authenticated by nonce).  The proxy
+prompts, degrading the user experience.  The proxy
 limits concurrent pending confirmations via `confirm.max_pending`
 (default: 3).  Requests beyond this limit are immediately denied and
 logged with deny forensics (process age, sign request count, rule
 trace).  See the [policy guide](policy-guide.md#confirmation-rate-limiting)
 for configuration.
+
+PIN confirmation depends on the integrity and confidentiality of the state
+directory. The daemon verifies the PIN using the YubiKey itself, but the PIN
+travels through a per-request FIFO. Sandboxed untrusted processes must be
+denied access to `~/.local/state/ssh-ag` as well as the upstream agent socket.
 
 ## Keep OpenSSH updated
 

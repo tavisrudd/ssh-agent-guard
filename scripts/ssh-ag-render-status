@@ -45,7 +45,7 @@ render_notify() {
     case "$EV_TYPE" in confirming) tmux_prefix=" ▶" ;; esac
     local tmux_cfg_suffix=""
     local i3_cfg_suffix=""
-    if [ "$CFG_ERROR" = "true" ]; then
+    if [ "$CFG_ERROR" = "true" ] && [ "$EV_TYPE" != "reload-error" ] && [ "$EV_TYPE" != "cfg-error" ]; then
         tmux_cfg_suffix="#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]"
         i3_cfg_suffix='<span background="#dc322f" foreground="#ffffff"> CfgErr </span>'
     fi
@@ -272,7 +272,7 @@ if [ -n "$TEST_MODE" ]; then
         i3status)
             if [ -n "$EV_TYPE" ]; then
                 local_cfg_suffix=""
-                if [ "$CFG_ERROR" = "true" ] && [ -n "$EV_TYPE" ]; then
+                if [ "$CFG_ERROR" = "true" ] && [ "$EV_TYPE" != "reload-error" ] && [ "$EV_TYPE" != "cfg-error" ]; then
                     local_cfg_suffix='<span background="#dc322f" foreground="#ffffff"> CfgErr </span>'
                 fi
                 printf '<span background="%s" foreground="#ffffff">  %s  </span>%s\n' \
@@ -286,7 +286,7 @@ if [ -n "$TEST_MODE" ]; then
                 local_prefix=""
                 case "$EV_TYPE" in confirming) local_prefix=" ▶" ;; esac
                 local_cfg_suffix=""
-                if [ "$CFG_ERROR" = "true" ]; then
+                if [ "$CFG_ERROR" = "true" ] && [ "$EV_TYPE" != "reload-error" ] && [ "$EV_TYPE" != "cfg-error" ]; then
                     local_cfg_suffix="#[bg=#dc322f,fg=#ffffff,bold] CfgErr #[default]"
                 fi
                 printf '#[bg=%s,fg=#ffffff,bold]%s %s #[default]%s\n' \

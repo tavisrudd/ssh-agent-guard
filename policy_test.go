@@ -267,7 +267,7 @@ rules:
 				Ancestry: []AncestorInfo{
 					{PID: 100, Name: "ssh"},
 					{PID: 50, Name: "bash"},
-					{PID: 10, Name: "git"},  // grandparent, not parent
+					{PID: 10, Name: "git"}, // grandparent, not parent
 				},
 				Env: map[string]string{},
 			},
@@ -1302,6 +1302,22 @@ func TestPolicyLoadMissingFile(t *testing.T) {
 	}
 }
 
+func TestPolicyInitialInvalidConfigFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyFile, []byte("{{{{invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	policy, loadResult := NewPolicy(policyFile)
+	if loadResult.OK {
+		t.Fatal("invalid initial policy unexpectedly loaded")
+	}
+	result := policy.Evaluate(&CallerContext{Name: "ssh", Env: map[string]string{}}, nil, "")
+	if result.Action != Confirm {
+		t.Fatalf("invalid initial policy must fail closed to confirm, got %v", result.Action)
+	}
+}
+
 func TestPolicyLoadInvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "policy.yaml")
@@ -1513,7 +1529,7 @@ rules:
 		Name:        "ssh",       // won't match "git"
 		SSHDest:     "user@host", // won't match
 		IsContainer: false,       // won't match
-		Env:                map[string]string{},
+		Env:         map[string]string{},
 	}
 
 	results := policy.EvaluateVerbose(caller, nil, "")
@@ -1789,15 +1805,15 @@ rules: []
 
 	captureList := getEnvVarsToCapture()
 	want := map[string]bool{
-		"SSH_CONNECTION":    true,
-		"SSH_TTY":           true,
-		"DISPLAY":           true,
-		"WAYLAND_DISPLAY":   true,
-		"TERM":              true,
-		"TMUX_PANE":         true,
-		"CLAUDECODE":        true,
-		"CURSOR_SESSION":    true,
-		"WINDSURF_ID":       true,
+		"SSH_CONNECTION":  true,
+		"SSH_TTY":         true,
+		"DISPLAY":         true,
+		"WAYLAND_DISPLAY": true,
+		"TERM":            true,
+		"TMUX_PANE":       true,
+		"CLAUDECODE":      true,
+		"CURSOR_SESSION":  true,
+		"WINDSURF_ID":     true,
 	}
 	got := make(map[string]bool, len(captureList))
 	for _, v := range captureList {

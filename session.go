@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -17,12 +18,25 @@ import (
 type SessionBindInfo struct {
 	DestKeyFingerprint string // SHA256 fingerprint of the destination host key
 	DestHostname       string // resolved via known_hosts reverse lookup
-	IsForwarded        bool   // true when agent access is forwarded
+	IsForwarded        bool   // true when any earlier hop forwarded the agent
+	SessionID          []byte // authenticated SSH session identifier (not logged)
+	BindingForwarded   bool   // forwarding flag for this individual binding
+	HostKeyBlob        []byte // authenticated destination key (not logged)
 }
+
+const (
+	maxSessionIDBytes   = 128
+	maxSessionBindBytes = 256 * 1024
+)
 
 // parseSessionBind decodes a session-bind@openssh.com extension payload.
 // Wire format per PROTOCOL.agent: string hostkey, string session_id, string signature, bool is_forwarding
 func parseSessionBind(data []byte) (*SessionBindInfo, error) {
+	// Match OpenSSH's maximum agent packet size. In particular, reject large
+	// certificates before parsing or retaining their attacker-controlled fields.
+	if len(data) > maxSessionBindBytes {
+		return nil, fmt.Errorf("session-bind payload length %d exceeds %d", len(data), maxSessionBindBytes)
+	}
 	r := data
 
 	// hostkey blob (SSH wire-format public key)
@@ -31,33 +45,143 @@ func parseSessionBind(data []byte) (*SessionBindInfo, error) {
 		return nil, fmt.Errorf("hostkey: %w", err)
 	}
 
-	// session_id — skip
-	_, r, err = readSSHString(r)
+	// session_id — authenticated by the host key signature below
+	sessionID, r, err := readSSHString(r)
 	if err != nil {
 		return nil, fmt.Errorf("session_id: %w", err)
 	}
+	if len(sessionID) == 0 || len(sessionID) > maxSessionIDBytes {
+		return nil, fmt.Errorf("session_id length %d is outside 1..%d", len(sessionID), maxSessionIDBytes)
+	}
 
-	// signature — skip
-	_, r, err = readSSHString(r)
+	// signature over session_id by hostkey
+	signatureBlob, r, err := readSSHString(r)
 	if err != nil {
 		return nil, fmt.Errorf("signature: %w", err)
 	}
 
 	// is_forwarding flag
-	if len(r) < 1 {
+	if len(r) != 1 {
 		return nil, fmt.Errorf("short read for forwarding flag")
 	}
-	isForwarded := r[0] != 0
+	if r[0] > 1 {
+		return nil, fmt.Errorf("invalid forwarding flag %d", r[0])
+	}
+	isForwarded := r[0] == 1
 
 	key, err := ssh.ParsePublicKey(hostKeyBlob)
 	if err != nil {
 		return nil, fmt.Errorf("parse host key: %w", err)
 	}
+	var signature ssh.Signature
+	if err := ssh.Unmarshal(signatureBlob, &signature); err != nil {
+		return nil, fmt.Errorf("parse signature: %w", err)
+	}
+	if err := validateSignatureTrailer(&signature); err != nil {
+		return nil, err
+	}
+	if err := key.Verify(sessionID, &signature); err != nil {
+		return nil, fmt.Errorf("verify signature: %w", err)
+	}
 
 	return &SessionBindInfo{
 		DestKeyFingerprint: ssh.FingerprintSHA256(key),
+		SessionID:          append([]byte(nil), sessionID...),
+		BindingForwarded:   isForwarded,
 		IsForwarded:        isForwarded,
+		HostKeyBlob:        append([]byte(nil), hostKeyBlob...),
 	}, nil
+}
+
+func validateSignatureTrailer(signature *ssh.Signature) error {
+	switch signature.Format {
+	case ssh.KeyAlgoSKED25519, ssh.KeyAlgoSKECDSA256:
+		// Security-key signatures append one byte of flags and a uint32 counter.
+		if len(signature.Rest) != 5 {
+			return fmt.Errorf("invalid security-key signature trailer length %d", len(signature.Rest))
+		}
+	default:
+		if len(signature.Rest) != 0 {
+			return fmt.Errorf("trailing signature data")
+		}
+	}
+	return nil
+}
+
+// validateUserauthSignData ensures a sign request is an SSH public-key userauth
+// request for the bound session and requested key. Forwarded chains must use
+// OpenSSH's hostbound method so the final destination key is part of the data.
+func validateUserauthSignData(data []byte, binding *SessionBindInfo, key ssh.PublicKey, requireHostbound bool) error {
+	sessionID, rest, err := readSSHString(data)
+	if err != nil || !bytes.Equal(sessionID, binding.SessionID) {
+		return fmt.Errorf("sign request is not bound to the final SSH session")
+	}
+	if len(rest) < 1 || rest[0] != 50 { // SSH2_MSG_USERAUTH_REQUEST
+		return fmt.Errorf("sign request is not SSH user authentication")
+	}
+	rest = rest[1:]
+	_, rest, err = readSSHString(rest) // username
+	if err != nil {
+		return fmt.Errorf("userauth username: %w", err)
+	}
+	service, rest, err := readSSHString(rest)
+	if err != nil || string(service) != "ssh-connection" {
+		return fmt.Errorf("invalid userauth service")
+	}
+	method, rest, err := readSSHString(rest)
+	if err != nil {
+		return fmt.Errorf("userauth method: %w", err)
+	}
+	if len(rest) < 1 || rest[0] != 1 {
+		return fmt.Errorf("userauth request does not contain a signature")
+	}
+	rest = rest[1:]
+	algorithm, rest, err := readSSHString(rest)
+	if err != nil {
+		return fmt.Errorf("userauth key algorithm: %w", err)
+	}
+	if !algorithmMatchesKey(string(algorithm), key.Type()) {
+		return fmt.Errorf("userauth key algorithm does not match requested signing key")
+	}
+	keyBlob, rest, err := readSSHString(rest)
+	if err != nil || !bytes.Equal(keyBlob, key.Marshal()) {
+		return fmt.Errorf("userauth key does not match requested signing key")
+	}
+
+	switch string(method) {
+	case "publickey-hostbound-v00@openssh.com":
+		hostKeyBlob, trailing, err := readSSHString(rest)
+		if err != nil || len(trailing) != 0 {
+			return fmt.Errorf("invalid hostbound destination key")
+		}
+		if !bytes.Equal(hostKeyBlob, binding.HostKeyBlob) {
+			return fmt.Errorf("hostbound destination key does not match final binding")
+		}
+	case "publickey":
+		if requireHostbound {
+			return fmt.Errorf("forwarded authentication requires publickey-hostbound")
+		}
+		if len(rest) != 0 {
+			return fmt.Errorf("trailing legacy userauth data")
+		}
+	default:
+		return fmt.Errorf("unsupported userauth method %q", method)
+	}
+	return nil
+}
+
+func algorithmMatchesKey(algorithm, keyType string) bool {
+	if algorithm == keyType {
+		return true
+	}
+	switch keyType {
+	case ssh.KeyAlgoRSA:
+		return algorithm == ssh.KeyAlgoRSASHA256 || algorithm == ssh.KeyAlgoRSASHA512
+	case ssh.CertAlgoRSAv01:
+		return algorithm == ssh.CertAlgoRSASHA256v01 || algorithm == ssh.CertAlgoRSASHA512v01
+	default:
+		return false
+	}
 }
 
 // readSSHString reads a uint32-length-prefixed string from data.

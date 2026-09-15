@@ -14,23 +14,23 @@ type checkOutput struct {
 }
 
 type checkContext struct {
-	LocalPID                  int32             `yaml:"local_pid"`
-	ProcessName               string            `yaml:"process_name"`
-	ExePath                   string            `yaml:"exe_path,omitempty"`
-	Cmdline                   string            `yaml:"cmdline"`
-	LocalCWD                  string            `yaml:"local_cwd"`
-	Cgroup                    string            `yaml:"cgroup,omitempty"`
+	LocalPID              int32             `yaml:"local_pid"`
+	ProcessName           string            `yaml:"process_name"`
+	ExePath               string            `yaml:"exe_path,omitempty"`
+	Cmdline               string            `yaml:"cmdline"`
+	LocalCWD              string            `yaml:"local_cwd"`
+	Cgroup                string            `yaml:"cgroup,omitempty"`
 	UserPresence          string            `yaml:"user_presence"`
 	UserPresenceHeuristic string            `yaml:"user_presence_heuristic"`
-	IsContainer               bool              `yaml:"is_container"`
-	NamespaceMismatches       []string          `yaml:"namespace_mismatches,omitempty"`
-	IsCodingAgent             bool              `yaml:"is_coding_agent"`
-	CodingAgentName           string            `yaml:"coding_agent_name,omitempty"`
-	TmuxWindow                string            `yaml:"tmux_window,omitempty"`
-	SSHDest                   string            `yaml:"ssh_dest,omitempty"`
-	ForwardedVia              string            `yaml:"forwarded_via,omitempty"`
-	Env                       map[string]string `yaml:"env,omitempty"`
-	LocalProcTree             []checkAncestor   `yaml:"local_proc_tree,omitempty"`
+	IsContainer           bool              `yaml:"is_container"`
+	NamespaceMismatches   []string          `yaml:"namespace_mismatches,omitempty"`
+	IsCodingAgent         bool              `yaml:"is_coding_agent"`
+	CodingAgentName       string            `yaml:"coding_agent_name,omitempty"`
+	TmuxWindow            string            `yaml:"tmux_window,omitempty"`
+	SSHDest               string            `yaml:"ssh_dest,omitempty"`
+	ForwardedVia          string            `yaml:"forwarded_via,omitempty"`
+	Env                   map[string]string `yaml:"env,omitempty"`
+	LocalProcTree         []checkAncestor   `yaml:"local_proc_tree,omitempty"`
 }
 
 type checkAncestor struct {
@@ -40,9 +40,9 @@ type checkAncestor struct {
 }
 
 type checkPolicyEvaluation struct {
-	PolicyFile string             `yaml:"policy_file"`
-	Key        *string            `yaml:"key"` // nil → null
-	Rules      []RuleCheckResult  `yaml:"rules"`
+	PolicyFile string            `yaml:"policy_file"`
+	Key        *string           `yaml:"key"` // nil → null
+	Rules      []RuleCheckResult `yaml:"rules"`
 }
 
 type checkResult struct {
@@ -70,22 +70,22 @@ func runCheck(policyPath string, pid int, keyFingerprint string) {
 	// Build context section
 	out := checkOutput{}
 	out.Context = checkContext{
-		LocalPID:                  ctx.PID,
-		ProcessName:               ctx.Name,
-		ExePath:                   ctx.ExePath,
-		Cmdline:                   ctx.Cmdline,
-		LocalCWD:                  ctx.CWD,
-		Cgroup:                    ctx.Cgroup,
+		LocalPID:              ctx.PID,
+		ProcessName:           ctx.Name,
+		ExePath:               ctx.ExePath,
+		Cmdline:               ctx.Cmdline,
+		LocalCWD:              ctx.CWD,
+		Cgroup:                ctx.Cgroup,
 		UserPresence:          ctx.UserPresence,
 		UserPresenceHeuristic: ctx.UserPresenceHeuristic,
-		IsContainer:               ctx.IsContainer,
-		NamespaceMismatches:       ctx.NamespaceMismatches,
-		IsCodingAgent:             ctx.IsCodingAgent,
-		CodingAgentName:           ctx.CodingAgentName,
-		TmuxWindow:                ctx.TmuxWindow,
-		SSHDest:                   ctx.SSHDest,
-		ForwardedVia:              ctx.ForwardedVia,
-		Env:                       ctx.Env,
+		IsContainer:           ctx.IsContainer,
+		NamespaceMismatches:   ctx.NamespaceMismatches,
+		IsCodingAgent:         ctx.IsCodingAgent,
+		CodingAgentName:       ctx.CodingAgentName,
+		TmuxWindow:            ctx.TmuxWindow,
+		SSHDest:               ctx.SSHDest,
+		ForwardedVia:          ctx.ForwardedVia,
+		Env:                   ctx.Env,
 	}
 	for _, a := range ctx.Ancestry {
 		out.Context.LocalProcTree = append(out.Context.LocalProcTree, checkAncestor{

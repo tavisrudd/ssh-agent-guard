@@ -19,6 +19,40 @@ func makeSSHString(data []byte) []byte {
 	return buf
 }
 
+func makeSignedSessionBind(t testing.TB, signer ssh.Signer, sessionID []byte, forwarded bool) []byte {
+	t.Helper()
+	sig, err := signer.Sign(rand.Reader, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := makeSSHString(signer.PublicKey().Marshal())
+	payload = append(payload, makeSSHString(sessionID)...)
+	payload = append(payload, makeSSHString(ssh.Marshal(sig))...)
+	if forwarded {
+		return append(payload, 1)
+	}
+	return append(payload, 0)
+}
+
+func makeUserauthData(sessionID []byte, userKey, hostKey ssh.PublicKey, hostbound bool) []byte {
+	data := makeSSHString(sessionID)
+	data = append(data, 50) // SSH2_MSG_USERAUTH_REQUEST
+	data = append(data, makeSSHString([]byte("alice"))...)
+	data = append(data, makeSSHString([]byte("ssh-connection"))...)
+	method := "publickey"
+	if hostbound {
+		method = "publickey-hostbound-v00@openssh.com"
+	}
+	data = append(data, makeSSHString([]byte(method))...)
+	data = append(data, 1) // signature follows
+	data = append(data, makeSSHString([]byte(userKey.Type()))...)
+	data = append(data, makeSSHString(userKey.Marshal())...)
+	if hostbound {
+		data = append(data, makeSSHString(hostKey.Marshal())...)
+	}
+	return data
+}
+
 func TestReadSSHString(t *testing.T) {
 	// Normal string
 	data := makeSSHString([]byte("hello"))
@@ -80,17 +114,10 @@ func TestParseSessionBind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hostKeyBlob := signer.PublicKey().Marshal()
 	expectedFP := ssh.FingerprintSHA256(signer.PublicKey())
 
-	// Build session-bind payload: hostkey, session_id, signature, is_forwarding
-	var payload []byte
-	payload = append(payload, makeSSHString(hostKeyBlob)...)
-	payload = append(payload, makeSSHString([]byte("session-id-here"))...)
-	payload = append(payload, makeSSHString([]byte("signature-here"))...)
-
 	// Test not-forwarded
-	notForwarded := append(payload, 0x00)
+	notForwarded := makeSignedSessionBind(t, signer, []byte("session-id-here"), false)
 	info, err := parseSessionBind(notForwarded)
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +130,7 @@ func TestParseSessionBind(t *testing.T) {
 	}
 
 	// Test forwarded
-	forwarded := append(payload, 0x01)
+	forwarded := makeSignedSessionBind(t, signer, []byte("session-id-forwarded"), true)
 	info, err = parseSessionBind(forwarded)
 	if err != nil {
 		t.Fatal(err)
@@ -113,15 +140,68 @@ func TestParseSessionBind(t *testing.T) {
 	}
 
 	// Test truncated payload
-	_, err = parseSessionBind(payload[:5])
+	_, err = parseSessionBind(notForwarded[:5])
 	if err == nil {
 		t.Error("expected error for truncated payload")
 	}
 
 	// Test missing forwarding flag
-	_, err = parseSessionBind(payload)
+	_, err = parseSessionBind(notForwarded[:len(notForwarded)-1])
 	if err == nil {
 		t.Error("expected error for missing forwarding flag")
+	}
+
+	// The host key is public metadata; a forged signature must not be trusted.
+	forged := append([]byte(nil), notForwarded...)
+	forged[len(forged)-2] ^= 0x01
+	if _, err = parseSessionBind(forged); err == nil {
+		t.Error("expected error for forged signature")
+	}
+}
+
+func TestParseSessionBindRejectsOversizeSessionID(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(priv)
+	payload := makeSignedSessionBind(t, signer, make([]byte, maxSessionIDBytes+1), true)
+	if _, err := parseSessionBind(payload); err == nil {
+		t.Fatal("oversize session identifier was accepted")
+	}
+}
+
+func TestParseSessionBindRejectsOversizeHostCertificate(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(priv)
+	cert := &ssh.Certificate{
+		Key:         signer.PublicKey(),
+		CertType:    ssh.HostCert,
+		Reserved:    make([]byte, maxSessionBindBytes),
+		ValidBefore: ssh.CertTimeInfinity,
+	}
+	if err := cert.SignCert(rand.Reader, signer); err != nil {
+		t.Fatal(err)
+	}
+	certSigner, err := ssh.NewCertSigner(cert, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := makeSignedSessionBind(t, certSigner, []byte("session-id"), true)
+	if len(payload) <= maxSessionBindBytes {
+		t.Fatalf("test payload is only %d bytes", len(payload))
+	}
+	if _, err := parseSessionBind(payload); err == nil {
+		t.Fatal("oversize host certificate was accepted")
+	}
+}
+
+func TestValidateSignatureTrailer(t *testing.T) {
+	if err := validateSignatureTrailer(&ssh.Signature{Format: ssh.KeyAlgoED25519, Rest: []byte{1}}); err == nil {
+		t.Fatal("ordinary signature trailer was accepted")
+	}
+	if err := validateSignatureTrailer(&ssh.Signature{Format: ssh.KeyAlgoSKED25519, Rest: make([]byte, 5)}); err != nil {
+		t.Fatalf("valid security-key signature trailer rejected: %v", err)
+	}
+	if err := validateSignatureTrailer(&ssh.Signature{Format: ssh.KeyAlgoSKED25519, Rest: make([]byte, 4)}); err == nil {
+		t.Fatal("invalid security-key signature trailer was accepted")
 	}
 }
 
@@ -197,11 +277,11 @@ func FuzzReadSSHString(f *testing.F) {
 	// Seed with valid and edge-case inputs
 	f.Add(makeSSHString([]byte("hello")))
 	f.Add(makeSSHString(nil))
-	f.Add([]byte{0, 0})                     // too short
-	f.Add([]byte{0, 0, 0, 10, 1, 2, 3})     // length exceeds data
-	f.Add([]byte{0, 0, 0, 0})               // zero-length string
-	f.Add([]byte{})                          // empty input
-	f.Add([]byte{0xff, 0xff, 0xff, 0xff})    // max uint32 length
+	f.Add([]byte{0, 0})                   // too short
+	f.Add([]byte{0, 0, 0, 10, 1, 2, 3})   // length exceeds data
+	f.Add([]byte{0, 0, 0, 0})             // zero-length string
+	f.Add([]byte{})                       // empty input
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff}) // max uint32 length
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Must not panic. Errors are expected for malformed input.
@@ -221,16 +301,11 @@ func FuzzParseSessionBind(f *testing.F) {
 	// Seed with a valid payload
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer, _ := ssh.NewSignerFromKey(priv)
-	hostKeyBlob := signer.PublicKey().Marshal()
-	var validPayload []byte
-	validPayload = append(validPayload, makeSSHString(hostKeyBlob)...)
-	validPayload = append(validPayload, makeSSHString([]byte("session-id"))...)
-	validPayload = append(validPayload, makeSSHString([]byte("signature"))...)
-	validPayload = append(validPayload, 0x01) // forwarded
+	validPayload := makeSignedSessionBind(f, signer, []byte("session-id"), true)
 
 	f.Add(validPayload)
 	f.Add([]byte{})                           // empty
-	f.Add([]byte{0, 0, 0, 5, 1, 2, 3, 4, 5}) // valid SSH string but not a valid key
+	f.Add([]byte{0, 0, 0, 5, 1, 2, 3, 4, 5})  // valid SSH string but not a valid key
 	f.Add(validPayload[:len(validPayload)-1]) // missing forwarding flag
 	f.Add(validPayload[:5])                   // truncated
 

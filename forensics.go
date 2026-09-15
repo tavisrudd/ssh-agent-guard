@@ -8,9 +8,9 @@ import (
 // DenyForensics holds additional context collected only for denied requests.
 // Attached to logEvent.Forensics when a sign or mutation request is denied.
 type DenyForensics struct {
-	SignRequestNum int                `yaml:"sign_request_num,omitempty"`
-	ProcessAge     string             `yaml:"process_age,omitempty"`
-	RuleTrace      []RuleCheckResult  `yaml:"rule_trace,omitempty"`
+	SignRequestNum int               `yaml:"sign_request_num,omitempty"`
+	ProcessAge     string            `yaml:"process_age,omitempty"`
+	RuleTrace      []RuleCheckResult `yaml:"rule_trace,omitempty"`
 }
 
 // collectDenyForensics gathers forensic context for a denied sign request.

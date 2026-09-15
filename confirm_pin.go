@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -26,11 +27,13 @@ func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext
 		return false
 	}
 
-	// Generate request ID and nonce for response authentication.
-	// The nonce prevents a same-user attacker from blindly writing "allow"
-	// to the FIFO — they must read the nonce from the request file first.
+	// Generate a request ID and nonce to correlate the helper response.
 	reqID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), caller.PID)
-	nonce := generateNonce()
+	nonce, err := generateNonce()
+	if err != nil {
+		log.Printf("confirm_pin: nonce generation: %v", err)
+		return false
+	}
 
 	// Write request details for the helper to display
 	reqPath := filepath.Join(c.PendingDir, reqID+".yaml")
@@ -74,21 +77,59 @@ func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext
 		return false
 	}
 
-	// Response must be "allow <nonce>" to prevent blind FIFO injection.
-	// A same-user attacker monitoring the pending directory could write to the
-	// FIFO, but they must read the nonce from the 0600 request file first.
-	if result == "allow "+nonce {
+	// The helper supplies the PIN; the daemon performs the YubiKey operation and
+	// decides whether it is valid. The nonce only correlates the response with
+	// this request. Filesystem isolation of PendingDir protects PIN secrecy.
+	pin, validResponse := parsePINResult(result, nonce)
+	if validResponse && c.verifyPIN(ctx, pin, denyCh) {
+		clear(pin)
 		log.Printf("confirm_pin: approved for %s → %s", caller.Name, dest)
 		return true
 	}
+	clear(pin)
 
-	log.Printf("confirm_pin: denied for %s → %s (result=%q)", caller.Name, dest, result)
+	logPINDenied(caller.Name, dest)
 	return false
 }
 
+func logPINDenied(caller, dest string) {
+	log.Printf("confirm_pin: denied for %s → %s", caller, dest)
+}
+
+func parsePINResult(result, nonce string) ([]byte, bool) {
+	parts := strings.Fields(result)
+	if len(parts) != 3 || parts[0] != "pin" || parts[1] != nonce {
+		return nil, false
+	}
+	pin, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, false
+	}
+	return pin, true
+}
+
+func (c *ConfirmConfig) verifyPIN(ctx context.Context, pin []byte, denyCh <-chan struct{}) bool {
+	verifyCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	resultCh := make(chan bool, 1)
+	go func() { resultCh <- c.VerifyPIN(verifyCtx, pin) }()
+	select {
+	case ok := <-resultCh:
+		return ok
+	case <-denyCh:
+		cancel()
+		<-resultCh
+		return false
+	case <-ctx.Done():
+		cancel()
+		<-resultCh
+		return false
+	}
+}
+
 // writeRequest writes the confirm request details as YAML for the helper.
-// The nonce is included so the helper can echo it back in the FIFO response,
-// proving it read the request file (which is 0600, user-only).
+// The nonce is included so the daemon can correlate the FIFO response with
+// this request. It is not an authenticator; PendingDir must be protected.
 func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session *SessionBindInfo, key ssh.PublicKey, nonce string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
@@ -113,17 +154,13 @@ func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session
 	return nil
 }
 
-// generateNonce returns a 16-byte hex-encoded random string for FIFO
-// response authentication.
-func generateNonce() string {
+// generateNonce returns a 16-byte hex-encoded random correlation value.
+func generateNonce() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand should never fail on Linux (/dev/urandom).
-		// Fall back to timestamp-based nonce rather than failing the confirm.
-		log.Printf("confirm_pin: crypto/rand failed: %v (using fallback)", err)
-		return fmt.Sprintf("%x", time.Now().UnixNano())
+		return "", err
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // readFIFO reads a single line from a FIFO, respecting context cancellation.
