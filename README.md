@@ -535,7 +535,6 @@ systemctl --user enable --now ssh-agent-guard
 - **sway** — `hasActiveDisplay()` uses `swaymsg` to check compositor
   reachability and detect `swaylock`.  Other Wayland/X11 compositors
   would need equivalent logic.
-- **jq** — used by `hasActiveDisplay()` to parse sway output JSON.
 - **i3status-rs** — `ssh-ag-render-status` writes pango markup to a
   file watched by i3status-rs.  Other status bars would need a
   different renderer.

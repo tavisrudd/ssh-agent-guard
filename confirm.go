@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // ConfirmConfig holds YubiKey confirmation settings.
@@ -128,6 +132,7 @@ func findBin(name string) string {
 }
 
 var serialRe = regexp.MustCompile(`\d+`)
+var procPIDRe = regexp.MustCompile(`^[0-9]+$`)
 
 // HasYubiKey checks if a YubiKey is currently connected.
 func (c *ConfirmConfig) HasYubiKey() bool {
@@ -272,35 +277,160 @@ func (c *ConfirmConfig) VerifyPIN(ctx context.Context, pin []byte) bool {
 	return subtle.ConstantTimeCompare([]byte(response), []byte(expected)) == 1
 }
 
+type swaySocketProbe func(context.Context, string, string) error
+
+func probeSwaySocket(ctx context.Context, swaymsgBin, socket string) error {
+	return exec.CommandContext(ctx, swaymsgBin, "-s", socket, "-t", "get_version").Run()
+}
+
+// swaySocketCandidates returns the inherited socket first when present, then
+// runtime-directory sockets newest-first.  Sway does not remove its IPC socket
+// after every abnormal exit, so lexical order is not a useful freshness signal.
+func swaySocketCandidates(inherited string) []string {
+	matches, _ := filepath.Glob(filepath.Join(xdgRuntimeDir(), "sway-ipc.*.sock"))
+	sort.SliceStable(matches, func(i, j int) bool {
+		iInfo, iErr := os.Stat(matches[i])
+		jInfo, jErr := os.Stat(matches[j])
+		if iErr != nil {
+			return false
+		}
+		if jErr != nil {
+			return true
+		}
+		return iInfo.ModTime().After(jInfo.ModTime())
+	})
+
+	seen := make(map[string]bool, len(matches)+1)
+	candidates := make([]string, 0, len(matches)+1)
+	for _, socket := range append([]string{inherited}, matches...) {
+		if socket != "" && !seen[socket] {
+			seen[socket] = true
+			candidates = append(candidates, socket)
+		}
+	}
+	return candidates
+}
+
+func findActiveSwaySocket(ctx context.Context, swaymsgBin string) (string, error) {
+	return findActiveSwaySocketFrom(ctx, swaymsgBin,
+		swaySocketCandidates(os.Getenv("SWAYSOCK")), probeSwaySocket)
+}
+
+func findActiveSwaySocketFrom(ctx context.Context, swaymsgBin string, candidates []string, probe swaySocketProbe) (string, error) {
+	for _, socket := range candidates {
+		if err := probe(ctx, swaymsgBin, socket); err == nil {
+			return socket, nil
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return "", fmt.Errorf("no reachable Sway IPC socket")
+}
+
+// swaylockIsActive uses the same readiness invariant as the lock launcher:
+// swaylock-active is written only after the session-lock protocol is acquired,
+// and lock.sh holds lock.sh.lock until swaylock exits.  This avoids depending
+// on process names, which Nix changes to .swaylock-wrapped.
+func swaylockIsActive() bool {
+	runtimeDir := xdgRuntimeDir()
+	markerInfo, err := os.Stat(filepath.Join(runtimeDir, "swaylock-active"))
+	if err == nil && markerInfo.Size() > 0 {
+		lockFile, openErr := os.OpenFile(filepath.Join(runtimeDir, "lock.sh.lock"), os.O_RDWR, 0)
+		if openErr != nil {
+			// A ready marker without a readable lock file is inconsistent.  Fail
+			// closed rather than presenting a GUI confirmation over the lockscreen.
+			return true
+		}
+		defer lockFile.Close()
+
+		flockErr := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if flockErr != nil {
+			return true
+		}
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+	}
+
+	// Support installations that launch swaylock directly rather than through
+	// lock.sh.  Inspect executable names instead of /proc/PID/comm, which is
+	// truncated and differs for Nix-wrapped programs.
+	procEntries, _ := os.ReadDir("/proc")
+	for _, entry := range procEntries {
+		if !entry.IsDir() || !procPIDRe.MatchString(entry.Name()) {
+			continue
+		}
+		procDir := filepath.Join("/proc", entry.Name())
+		info, statErr := os.Stat(procDir)
+		if statErr != nil {
+			continue
+		}
+		stat, ok := info.Sys().(*unix.Stat_t)
+		if !ok || stat.Uid != uint32(os.Getuid()) {
+			continue
+		}
+		exe, readErr := os.Readlink(filepath.Join(procDir, "exe"))
+		if readErr == nil && isSwaylockExecutable(exe) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSwaylockExecutable(exe string) bool {
+	base := strings.TrimSuffix(filepath.Base(exe), " (deleted)")
+	return base == "swaylock" || base == ".swaylock-wrapped"
+}
+
+type swayOutput struct {
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+	Power  *bool  `json:"power"`
+}
+
+func hasUsableSwayOutput(data []byte, excludedNames string) (bool, error) {
+	var outputs []swayOutput
+	if err := json.Unmarshal(data, &outputs); err != nil {
+		return false, err
+	}
+
+	excluded := make(map[string]struct{})
+	for _, name := range strings.Split(excludedNames, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			excluded[name] = struct{}{}
+		}
+	}
+
+	for _, output := range outputs {
+		if !output.Active || (output.Power != nil && !*output.Power) {
+			continue
+		}
+		if _, skip := excluded[output.Name]; !skip {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // hasActiveDisplay checks whether the local sway session has a usable display.
-// Returns false if swaylock is running, no active outputs, or swaymsg unreachable.
+// Returns false if swaylock is active, no active outputs, or no Sway IPC socket
+// is reachable.
 // Mirrors avoid_gui() logic in pinentry-auto.
 func hasActiveDisplay() bool {
 	swaymsgBin := findBin("swaymsg")
 
-	// Discover SWAYSOCK if not in env (gpg-agent/systemd don't pass it).
-	// Build a custom env slice instead of os.Setenv to avoid race with
-	// concurrent goroutines. nil swayEnv means "inherit parent env".
-	var swayEnv []string
-	if os.Getenv("SWAYSOCK") == "" {
-		matches, _ := filepath.Glob(fmt.Sprintf("/run/user/%d/sway-ipc.*.sock", os.Getuid()))
-		if len(matches) > 0 {
-			swayEnv = append(os.Environ(), "SWAYSOCK="+matches[0])
-		}
-	}
-
-	// Check swaymsg is reachable
+	// Probe the inherited socket first, then discover a live replacement.  The
+	// daemon's environment is immutable, while Sway's socket changes whenever
+	// the compositor is fully restarted.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	versionCmd := exec.CommandContext(ctx, swaymsgBin, "-t", "get_version")
-	versionCmd.Env = swayEnv
-	if err := versionCmd.Run(); err != nil {
+	swaySocket, err := findActiveSwaySocket(ctx, swaymsgBin)
+	if err != nil {
 		log.Printf("hasActiveDisplay: swaymsg not reachable: %v", err)
 		return false
 	}
 
-	// Swaylock running — GUI prompts hidden behind lockscreen
-	if exec.Command("pgrep", "-x", "swaylock").Run() == nil {
+	// Swaylock active — GUI prompts are hidden behind the lockscreen.
+	if swaylockIsActive() {
 		log.Printf("hasActiveDisplay: swaylock running")
 		return false
 	}
@@ -310,38 +440,18 @@ func hasActiveDisplay() bool {
 	// e.g. built-in LCDs that don't indicate user presence.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
-	jqBin := findBin("jq")
-	cmd := exec.CommandContext(ctx2, swaymsgBin, "-t", "get_outputs", "-r")
-	cmd.Env = swayEnv
+	cmd := exec.CommandContext(ctx2, swaymsgBin, "-s", swaySocket, "-t", "get_outputs", "-r")
 	out, err := cmd.Output()
 	if err != nil {
 		log.Printf("hasActiveDisplay: get_outputs failed: %v", err)
 		return false
 	}
-	jqFilter := `[.[] | select(.active)] | length`
-	if exclude := os.Getenv("SSH_AG_EXCLUDE_OUTPUTS"); exclude != "" {
-		// Build jq filter that excludes named outputs
-		parts := strings.Split(exclude, ",")
-		var conds []string
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				conds = append(conds, fmt.Sprintf(`.name != %q`, p))
-			}
-		}
-		if len(conds) > 0 {
-			jqFilter = fmt.Sprintf(`[.[] | select(.active and %s)] | length`, strings.Join(conds, " and "))
-		}
-	}
-	jqCmd := exec.Command(jqBin, jqFilter)
-	jqCmd.Stdin = strings.NewReader(string(out))
-	jqOut, err := jqCmd.Output()
+	active, err := hasUsableSwayOutput(out, os.Getenv("SSH_AG_EXCLUDE_OUTPUTS"))
 	if err != nil {
-		log.Printf("hasActiveDisplay: jq failed: %v", err)
+		log.Printf("hasActiveDisplay: invalid get_outputs response: %v", err)
 		return false
 	}
-	count := strings.TrimSpace(string(jqOut))
-	if count == "0" {
+	if !active {
 		log.Printf("hasActiveDisplay: no active outputs")
 		return false
 	}
