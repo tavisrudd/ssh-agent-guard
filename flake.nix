@@ -2,7 +2,7 @@
   description = "ssh-agent-guard — policy-enforcing proxy for SSH agent signing";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
   };
 
   outputs = { self, nixpkgs }:
@@ -20,7 +20,7 @@
             pname = "ssh-agent-guard";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-xF4ytT6b40VVRaXhSCkEisdWjA3yRAFTMQgqHMWkc9Q=";
+            vendorHash = "sha256-3Y9l4Ys3c+XTUOB/UJcOrWDBfriDBqMx06Fq5GHdqW4=";
             ldflags = [ "-s" "-w" ];
 
             nativeBuildInputs = [ pkgs.makeWrapper ];

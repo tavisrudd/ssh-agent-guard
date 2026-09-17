@@ -521,7 +521,7 @@ systemctl --user enable --now ssh-agent-guard
   `is_in_known_hosts`, and `is_forwarded` policy fields.
   Without it the guard still works but cannot identify remote
   destinations or detect forwarding.
-- **Go 1.25+** — for building from source.
+- **Go 1.26+** — for building from source.
 
 ### Optional dependencies
 
