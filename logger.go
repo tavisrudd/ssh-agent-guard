@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 // logEvent is the unified YAML structure for sign/mutation log files
 // and the pending/previous sections of current.yaml.
 type logEvent struct {
+	ConfirmError          string            `yaml:"confirm_error,omitempty"`
 	Timestamp             string            `yaml:"timestamp"`
 	Trigger               string            `yaml:"trigger"`
 	ProcessName           string            `yaml:"process_name"`
@@ -170,6 +172,7 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 		Decision:              decision,
 		Rule:                  result.RuleName,
 		ConfirmMethod:         result.ConfirmMethod,
+		ConfirmError:          result.ConfirmError,
 		LogFile:               logPath,
 		Env:                   ctx.Env,
 		Forensics:             forensics,
@@ -319,6 +322,10 @@ func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *Session
 	log.Printf("sign: %s → %s%s [%s/%s]%s (key %s) pid=%d",
 		ctx.Name, dest, via, decision, result.RuleName, method, fingerprint[:19], ctx.PID)
 
+	if result.ConfirmError != "" {
+		log.Printf("sign: %s → %s: %s", ctx.Name, dest, result.ConfirmError)
+	}
+
 	// Store previous with log_file path for current.yaml
 	ev.LogFile = logPath
 
@@ -327,6 +334,13 @@ func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *Session
 
 	l.previous = ev
 	summary := buildSummary(ctx, session, fmt.Sprintf("sign %s", dest))
+	if result.ConfirmError != "" {
+		reason, _, _ := strings.Cut(result.ConfirmError, ";")
+		if strings.Contains(reason, "is not enrolled") {
+			reason += " (run ssh-agent-guard doctor)"
+		}
+		summary = fmt.Sprintf("%s: %s", summary, reason)
+	}
 	l.writeIdle(summary)
 }
 

@@ -60,3 +60,36 @@ the `ssh-ag-confirm` script handles this automatically.
 
 The challenge string and slot numbers are configurable in the policy
 file's `confirm:` section.  See ssh-agent-guard-policy(5).
+
+### Diagnosing confirmation failures
+
+Run `ssh-agent-guard doctor` to check policy settings, guard and upstream
+agent connectivity, USB HID access, HMAC slot status, and enrollment for
+the connected key. It prints enrollment commands using your configured
+state directory, slot, and challenge when the response file is missing.
+Enrollment is per YubiKey serial and must be available on each host.
+
+Use `ssh-agent-guard doctor --touch` to verify an existing enrollment
+against the key; touch it when it blinks. The default checks do not request
+a touch or change the key. An occupied OTP slot is not proof that it is
+configured for HMAC; inspect it with `ykman otp info` before programming it.
+
+OpenSSH receives a generic agent failure through the SSH agent protocol.
+For touch failures, the guard reports the cause in its status bar and
+journal, with the full explanation in `confirm_error` in the event YAML.
+Missing enrollment feedback directs you to `ssh-agent-guard doctor`.
+
+To investigate a refusal, run:
+
+```bash
+ssh-agent-guard doctor
+journalctl --user -u ssh-agent-guard -n 30 --no-pager
+```
+
+For a daemon using custom paths, pass the same `--policy`, `--state-dir`,
+`--listen`, and `--upstream` options to doctor. Doctor reads the policy on
+disk; it does not query the running daemon's active policy snapshot.
+An enrollment file may fall back to `default.response`, matching the daemon.
+Doctor reports problems with a nonzero exit status. Its default checks do
+not validate the HMAC response against the key, OpenPGP signing, remote PIN
+confirmation, or whether an occupied slot enforces touch.

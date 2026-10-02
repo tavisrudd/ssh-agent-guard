@@ -144,18 +144,24 @@ func (c *ConfirmConfig) HasYubiKey() bool {
 // Races ykchalresp against the deny file — touching the deny file cancels immediately.
 // The confirming state is already set on the status bar by the caller.
 func (c *ConfirmConfig) ConfirmHMAC(parent context.Context) bool {
+	ok, _ := c.confirmHMAC(parent)
+	return ok
+}
+
+// confirmHMAC returns an actionable reason when confirmation fails.
+func (c *ConfirmConfig) confirmHMAC(parent context.Context) (bool, string) {
 	// Get YubiKey serial
 	serial := c.getSerial()
 	if serial == "" {
 		log.Printf("confirm: no YubiKey detected")
-		return false
+		return false, "No YubiKey detected; connect your enrolled key"
 	}
 
 	// Load expected response for this serial
 	expected := c.loadExpectedResponse(serial)
 	if expected == "" {
 		log.Printf("confirm: no response file for serial %s", serial)
-		return false
+		return false, fmt.Sprintf("YubiKey %s is not enrolled; run ssh-agent-guard doctor for enrollment instructions. Register slot %s challenge %s in %s", serial, c.Slot, c.Challenge, filepath.Join(c.ResponseDir, serial+".response"))
 	}
 
 	// Run challenge-response with timeout, cancelled if client disconnects
@@ -184,23 +190,29 @@ func (c *ConfirmConfig) ConfirmHMAC(parent context.Context) bool {
 			} else {
 				log.Printf("confirm: ykchalresp failed: %v", r.err)
 			}
-			return false
+			if ctx.Err() == context.DeadlineExceeded {
+				return false, fmt.Sprintf("YubiKey touch timed out after %s; retry and touch the key when it blinks", c.Timeout)
+			}
+			return false, fmt.Sprintf("YubiKey touch failed: %v; check slot %s configuration and USB access", r.err, c.Slot)
 		}
 		if subtle.ConstantTimeCompare([]byte(r.response), []byte(expected)) == 1 {
 			log.Printf("confirm: YubiKey response matched (serial %s)", serial)
-			return true
+			return true, ""
 		}
 		log.Printf("confirm: YubiKey response mismatch (serial %s)", serial)
-		return false
+		return false, fmt.Sprintf("YubiKey %s response mismatch; check enrolled response and challenge", serial)
 	case <-denyCh:
 		cancel() // kill ykchalresp
 		log.Printf("confirm: explicitly denied via deny file")
-		return false
+		return false, "Confirmation explicitly cancelled"
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
 			log.Printf("confirm: YubiKey timeout after %s", c.Timeout)
 		}
-		return false
+		if ctx.Err() == context.DeadlineExceeded {
+			return false, fmt.Sprintf("YubiKey touch timed out after %s; retry and touch the key when it blinks", c.Timeout)
+		}
+		return false, "SSH client disconnected; confirmation cancelled"
 	}
 }
 

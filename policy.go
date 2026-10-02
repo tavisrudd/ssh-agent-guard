@@ -705,6 +705,7 @@ func compileMatch(m MatchSpec) (compiledMatch, error) {
 
 // EvalResult holds the policy decision and the rule that produced it.
 type EvalResult struct {
+	ConfirmError  string // actionable explanation for failed confirmation
 	Action        Action
 	RuleName      string // "default" if no rule matched
 	Confirmed     *bool  // nil unless action was confirm; true=touched, false=denied

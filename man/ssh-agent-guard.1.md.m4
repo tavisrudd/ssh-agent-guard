@@ -20,6 +20,10 @@ ssh-agent-guard - policy-enforcing proxy for SSH agent sockets
 [**--key** *fingerprint*]
 [**--policy** *path*]
 
+**ssh-agent-guard** **doctor** [**--touch**]
+[**--policy** *path*] [**--state-dir** *path*]
+[**--listen** *path*] [**--upstream** *path*]
+
 # DESCRIPTION
 
 **ssh-agent-guard** sits between SSH clients and a real SSH agent
@@ -70,6 +74,18 @@ Default: *~/.config/ssh-ag/policy.yaml*.
 
 **--verbose**
 : Log all operations, including key listing requests (normally suppressed).
+
+### doctor subcommand
+
+**ssh-agent-guard doctor** checks policy settings, agent socket connectivity,
+USB HID access, slot status, and enrollment for the connected YubiKey.
+Missing enrollment prints commands using the effective confirmation settings.
+Checks do not modify the key or enrollment files. Problems produce a nonzero
+exit status. Global **--policy**, **--state-dir**, **--listen**, and
+**--upstream** options select the configuration to check.
+
+**--touch**
+: Verify the stored HMAC response against the key; requires physical touch.
 
 ### check subcommand
 

@@ -340,3 +340,16 @@ load.
 errors:
   - "line 12: unknown field foo_bar"
 ```
+
+### Confirmation failure details
+
+Failed touch confirmations include `confirm_error` in the sign event YAML
+and `previous` section of `current.yaml`. The journal records the full
+explanation. The status text includes the cause before the first semicolon;
+missing enrollment also shows `run ssh-agent-guard doctor`. Custom desktop
+notifications using `TEXT` receive the same explanation. OpenSSH displays
+its generic agent refusal because the agent protocol has no error text field.
+
+This field is optional and currently applies to touch confirmation failures.
+It distinguishes missing enrollment, missing key, timeout, HMAC mismatch,
+explicit cancellation, and failures to run the HMAC request.

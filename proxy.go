@@ -139,7 +139,7 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 	switch result.ConfirmMethod {
 	case "touch":
 		log.Printf("confirm: method=touch for %s → %s", p.caller.Name, dest)
-		ok = p.confirmCfg.ConfirmHMAC(p.ctx)
+		ok, result.ConfirmError = p.confirmCfg.confirmHMAC(p.ctx)
 	case "pin":
 		log.Printf("confirm: method=pin for %s → %s", p.caller.Name, dest)
 		ok = p.confirmCfg.ConfirmPIN(p.ctx, p.caller, p.session, key)

@@ -26,6 +26,7 @@ type CLI struct {
 	StateDir string    `help:"State directory for logs." default:"${state_dir_default}" name:"state-dir"`
 	Policy   string    `help:"Policy config path." default:"${policy_default}" name:"policy"`
 	Verbose  bool      `help:"Log all operations including list requests." name:"verbose"`
+	Doctor   DoctorCmd `cmd:"" help:"Check agent connectivity and YubiKey enrollment."`
 	Daemon   DaemonCmd `cmd:"" default:"withargs" hidden:""`
 	Check    CheckCmd  `cmd:"" help:"Gather caller state and evaluate policy (debug mode)."`
 }
@@ -52,7 +53,7 @@ func main() {
 	})
 
 	switch ctx.Command() {
-	case "check":
+	case "check", "doctor":
 		ctx.FatalIfErrorf(ctx.Run(&cli))
 		return
 	}

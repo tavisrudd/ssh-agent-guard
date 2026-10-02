@@ -19,6 +19,11 @@ ssh-agent-guard \- policy-enforcing proxy for SSH agent sockets
 [\fB--key\fP \fIfingerprint\fP]
 [\fB--policy\fP \fIpath\fP]
 
+.PP
+\fBssh-agent-guard\fP \fBdoctor\fP [\fB--touch\fP]
+[\fB--policy\fP \fIpath\fP] [\fB--state-dir\fP \fIpath\fP]
+[\fB--listen\fP \fIpath\fP] [\fB--upstream\fP \fIpath\fP]
+
 
 .SH DESCRIPTION
 \fBssh-agent-guard\fP sits between SSH clients and a real SSH agent
@@ -77,6 +82,17 @@ Default: \fI~/.config/ssh-ag/policy.yaml\fP\&.
 .TP
 \fB--verbose\fP
 Log all operations, including key listing requests (normally suppressed).
+
+.SS doctor subcommand
+\fBssh-agent-guard doctor\fP checks policy settings, agent socket connectivity,
+USB HID access, slot status, and enrollment for the connected YubiKey.
+Missing enrollment prints commands using the effective confirmation settings.
+Checks do not modify the key or enrollment files. Problems produce a nonzero
+exit status. Global \fB--policy\fP, \fB--state-dir\fP, \fB--listen\fP, and
+\fB--upstream\fP options select the configuration to check.
+.TP
+\fB--touch\fP
+Verify the stored HMAC response against the key; requires physical touch.
 
 .SS check subcommand
 \fBssh-agent-guard check\fP gathers caller context for a process and evaluates
@@ -540,6 +556,42 @@ the \fBssh-ag-confirm\fR script handles this automatically.
 .PP
 The challenge string and slot numbers are configurable in the policy
 file's \fBconfirm:\fR section.  See ssh-agent-guard-policy(5).
+
+.SS Diagnosing confirmation failures
+Run \fBssh-agent-guard doctor\fR to check policy settings, guard and upstream
+agent connectivity, USB HID access, HMAC slot status, and enrollment for
+the connected key. It prints enrollment commands using your configured
+state directory, slot, and challenge when the response file is missing.
+Enrollment is per YubiKey serial and must be available on each host.
+
+.PP
+Use \fBssh-agent-guard doctor --touch\fR to verify an existing enrollment
+against the key; touch it when it blinks. The default checks do not request
+a touch or change the key. An occupied OTP slot is not proof that it is
+configured for HMAC; inspect it with \fBykman otp info\fR before programming it.
+
+.PP
+OpenSSH receives a generic agent failure through the SSH agent protocol.
+For touch failures, the guard reports the cause in its status bar and
+journal, with the full explanation in \fBconfirm_error\fR in the event YAML.
+Missing enrollment feedback directs you to \fBssh-agent-guard doctor\fR\&.
+
+.PP
+To investigate a refusal, run:
+
+.EX
+ssh-agent-guard doctor
+journalctl --user -u ssh-agent-guard -n 30 --no-pager
+.EE
+
+.PP
+For a daemon using custom paths, pass the same \fB--policy\fR, \fB--state-dir\fR,
+\fB--listen\fR, and \fB--upstream\fR options to doctor. Doctor reads the policy on
+disk; it does not query the running daemon's active policy snapshot.
+An enrollment file may fall back to \fBdefault.response\fR, matching the daemon.
+Doctor reports problems with a nonzero exit status. Its default checks do
+not validate the HMAC response against the key, OpenPGP signing, remote PIN
+confirmation, or whether an occupied slot enforces touch.
 
 
 .SH ENVIRONMENT
