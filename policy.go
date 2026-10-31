@@ -838,23 +838,10 @@ func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, ke
 		return false
 	}
 
-	// is_in_known_hosts: session-bind destination resolved against known_hosts
-	if m.isInKnownHosts != nil {
-		sessionDest := ""
-		if session != nil {
-			sessionDest = session.DestHostname
-		}
-		if *m.isInKnownHosts {
-			// true: require the dest to be known (non-empty hostname from known_hosts)
-			if sessionDest == "" {
-				return false
-			}
-		} else {
-			// false: match when dest is NOT in known_hosts (no session-bind or empty hostname)
-			if sessionDest != "" {
-				return false
-			}
-		}
+	// is_in_known_hosts: session-bind destination key found in known_hosts
+	// (named or hashed)
+	if m.isInKnownHosts != nil && *m.isInKnownHosts != session.InKnownHosts() {
+		return false
 	}
 
 	// forwarded_via: glob/regex against CallerContext.ForwardedVia
@@ -992,19 +979,11 @@ func (m *compiledMatch) checkMismatches(ctx *CallerContext, session *SessionBind
 	if !matchSSHDest(m.sshDest, sshDest) {
 		mm = append(mm, fmt.Sprintf("ssh_dest: want %q, got %q", m.sshDest.raw, sshDest))
 	}
-	if m.isInKnownHosts != nil {
-		sessionDest := ""
-		if session != nil {
-			sessionDest = session.DestHostname
-		}
+	if m.isInKnownHosts != nil && *m.isInKnownHosts != session.InKnownHosts() {
 		if *m.isInKnownHosts {
-			if sessionDest == "" {
-				mm = append(mm, "is_in_known_hosts: want true, no session-bind dest")
-			}
+			mm = append(mm, "is_in_known_hosts: want true, destination key not in known_hosts")
 		} else {
-			if sessionDest != "" {
-				mm = append(mm, fmt.Sprintf("is_in_known_hosts: want false, but dest %q is in known_hosts", sessionDest))
-			}
+			mm = append(mm, fmt.Sprintf("is_in_known_hosts: want false, but destination %q is in known_hosts", session.DestName()))
 		}
 	}
 	if !m.forwardedVia.matchString(ctx.ForwardedVia) {

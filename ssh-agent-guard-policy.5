@@ -214,7 +214,8 @@ avoid shadowing.
 \fBis_in_known_hosts:\fP \fItrue\fP | \fIfalse\fP
 Boolean.
 Matches only if the session-bind destination host key
-was found in known_hosts.
+was found in a known_hosts file, including hashed entries
+(see \fBssh-agent-guard\fP(1), FILES).
 
 .TP
 \fBforwarded_via:\fP \fIpattern\fP

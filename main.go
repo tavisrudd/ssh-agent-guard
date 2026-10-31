@@ -97,10 +97,14 @@ func main() {
 	// Compile ControlPath regex for mux forwarded_via extraction
 	initMuxViaRegex()
 
-	// Load known_hosts for reverse host key → hostname lookup
-	knownHostsPath := filepath.Join(os.Getenv("HOME"), ".ssh", "known_hosts")
+	// Destination names: known_hosts files named by the ssh config, hashed
+	// entries matched against ssh config names, and learned names.
+	home := os.Getenv("HOME")
 	var knownHosts atomic.Pointer[KnownHostsResolver]
-	knownHosts.Store(NewKnownHostsResolver(knownHostsPath))
+	resolver, nameDeps := LoadDestinationNames(home)
+	knownHosts.Store(resolver)
+	learnedNames = LoadLearnedNames(filepath.Join(stateDir, "learned-hosts"))
+	go watchDestinationNames(home, &knownHosts, nameDeps)
 
 	// Remove stale socket from previous run
 	os.Remove(listenPath)
@@ -129,7 +133,8 @@ func main() {
 		for range hupCh {
 			log.Printf("SIGHUP: reloading policy and known_hosts")
 			result := policy.Load()
-			knownHosts.Store(NewKnownHostsResolver(knownHostsPath))
+			r, _ := LoadDestinationNames(home)
+			knownHosts.Store(r)
 			updateConfirmCfg()
 			logger.LogConfigChange(result)
 			logger.NotifyReload()

@@ -438,11 +438,20 @@ Used to verify YubiKey identity during confirmation.
 Directory for PIN confirmation requests (FIFO-based).
 
 .TP
-\fB~/.ssh/known_hosts\fP
-Parsed for reverse host key fingerprint to hostname mapping, enabling
-\fBssh_dest\fP fallback and \fBis_in_known_hosts\fP policy matching on forwarded
-agent sessions.
-Hashed entries (\fBHashKnownHosts\fP) are skipped (irreversible by design).
+\fB~/.local/state/ssh-ag/learned-hosts\fP
+Destination names learned from direct connections (host key fingerprint,
+name), for keys in known_hosts that nothing else names. Written only by the
+proxy.
+
+.TP
+\fB~/.ssh/config\fP, \fBknown_hosts\fP files
+The proxy reads every known_hosts file ssh would (defaults plus
+\fBUserKnownHostsFile\fP and \fBGlobalKnownHostsFile\fP from the ssh config and
+its includes) to map destination host keys to names, enabling \fBssh_dest\fP
+and \fBis_in_known_hosts\fP on forwarded agent sessions.
+Hashed entries (\fBHashKnownHosts\fP) are named by hashing candidate names
+from the ssh config (\fBHost\fP, \fBMatch host\fP, \fBHostname\fP); reloaded within
+ten seconds of a change.
 
 
 .SH REQUIREMENTS

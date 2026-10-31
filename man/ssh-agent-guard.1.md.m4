@@ -201,11 +201,19 @@ Used to verify YubiKey identity during confirmation.
 **~/.local/state/ssh-ag/pending/**
 : Directory for PIN confirmation requests (FIFO-based).
 
-**~/.ssh/known_hosts**
-: Parsed for reverse host key fingerprint to hostname mapping, enabling
-**ssh_dest** fallback and **is_in_known_hosts** policy matching on forwarded
-agent sessions.
-Hashed entries (**HashKnownHosts**) are skipped (irreversible by design).
+**~/.local/state/ssh-ag/learned-hosts**
+: Destination names learned from direct connections (host key fingerprint,
+name), for keys in known_hosts that nothing else names. Written only by the
+proxy.
+
+**~/.ssh/config**, **known_hosts** files
+: The proxy reads every known_hosts file ssh would (defaults plus
+**UserKnownHostsFile** and **GlobalKnownHostsFile** from the ssh config and
+its includes) to map destination host keys to names, enabling **ssh_dest**
+and **is_in_known_hosts** on forwarded agent sessions.
+Hashed entries (**HashKnownHosts**) are named by hashing candidate names
+from the ssh config (**Host**, **Match host**, **Hostname**); reloaded within
+ten seconds of a change.
 
 # REQUIREMENTS
 

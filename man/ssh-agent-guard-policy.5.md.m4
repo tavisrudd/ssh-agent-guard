@@ -197,7 +197,8 @@ avoid shadowing.
 **is_in_known_hosts:** *true* | *false*
 : Boolean.
 Matches only if the session-bind destination host key
-was found in known_hosts.
+was found in a known_hosts file, including hashed entries
+(see **ssh-agent-guard**(1), FILES).
 
 **forwarded_via:** *pattern*
 : Glob or regex against the intermediate host in *user@host* format,

@@ -20,6 +20,7 @@ type SessionBindInfo struct {
 	DestKeyFingerprint string // SHA256 fingerprint of the destination host key
 	DestHostname       string // resolved via known_hosts reverse lookup
 	DestAlias          string // name carried over from the local ssh that authenticated this session
+	DestKnown          bool   // host key appears in a known_hosts file (named or hashed)
 	IsForwarded        bool   // true when any earlier hop forwarded the agent
 	SessionID          []byte // authenticated SSH session identifier (not logged)
 	BindingForwarded   bool   // forwarding flag for this individual binding
@@ -36,6 +37,11 @@ func (s *SessionBindInfo) DestName() string {
 		return s.DestHostname
 	}
 	return s.DestAlias
+}
+
+// InKnownHosts reports whether the destination key is in known_hosts.
+func (s *SessionBindInfo) InKnownHosts() bool {
+	return s != nil && (s.DestKnown || s.DestHostname != "")
 }
 
 // sessionNames remembers, across connections, the destination name a local
@@ -269,19 +275,23 @@ func readSSHString(data []byte) ([]byte, []byte, error) {
 // known_hosts files. Enables reverse lookup: given a host key from a
 // session-bind, find which host it belongs to.
 //
-// Limitation: hashed known_hosts entries (HashKnownHosts yes) are skipped
-// because the hash is one-way — we can't reverse a hashed hostname from a
-// key fingerprint. When all entries are hashed, ssh_dest (session-bind fallback)
-// and is_in_known_hosts policy matching won't work for forwarded agent sessions.
-// Workaround: maintain a plaintext known_hosts alongside the hashed one via
-// UserKnownHostsFile in ssh_config.
+// Hashed entries (HashKnownHosts yes) still mark their key as known; their
+// names are recovered by MatchHashed from candidate names in the ssh config.
 type KnownHostsResolver struct {
 	byFingerprint map[string][]string // SHA256 fingerprint → hostnames
+	known         map[string]bool     // every fingerprint in known_hosts, hashed or not
+	hashed        []hashedHostEntry
+}
+
+type hashedHostEntry struct {
+	salt, sum   []byte
+	fingerprint string
 }
 
 func NewKnownHostsResolver(paths ...string) *KnownHostsResolver {
 	r := &KnownHostsResolver{
 		byFingerprint: make(map[string][]string),
+		known:         make(map[string]bool),
 	}
 	for _, path := range paths {
 		r.loadFile(path)
@@ -292,7 +302,9 @@ func NewKnownHostsResolver(paths ...string) *KnownHostsResolver {
 func (r *KnownHostsResolver) loadFile(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Printf("known_hosts: %s: %v", path, err)
+		if !os.IsNotExist(err) {
+			log.Printf("known_hosts: %s: %v", path, err)
+		}
 		return
 	}
 
@@ -300,12 +312,6 @@ func (r *KnownHostsResolver) loadFile(path string) {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Skip hashed entries (|1|salt|hash format from HashKnownHosts).
-		// These are HMAC-SHA1 hashes of the hostname — irreversible by design.
-		// See the KnownHostsResolver doc comment for implications.
-		if strings.HasPrefix(line, "|") {
 			continue
 		}
 		// Skip @cert-authority / @revoked markers
@@ -332,6 +338,21 @@ func (r *KnownHostsResolver) loadFile(path string) {
 			continue
 		}
 		fp := ssh.FingerprintSHA256(key)
+		r.known[fp] = true
+
+		// Hashed entry (|1|salt|hash from HashKnownHosts): the key is known;
+		// its name can be recovered only by MatchHashed.
+		if strings.HasPrefix(hostnames, "|") {
+			parts := strings.Split(hostnames, "|")
+			if len(parts) == 4 && parts[1] == "1" {
+				salt, err1 := base64.StdEncoding.DecodeString(parts[2])
+				sum, err2 := base64.StdEncoding.DecodeString(parts[3])
+				if err1 == nil && err2 == nil {
+					r.hashed = append(r.hashed, hashedHostEntry{salt: salt, sum: sum, fingerprint: fp})
+				}
+			}
+			continue
+		}
 
 		for _, h := range strings.Split(hostnames, ",") {
 			h = strings.TrimSpace(h)
@@ -350,6 +371,31 @@ func (r *KnownHostsResolver) loadFile(path string) {
 		}
 	}
 	log.Printf("known_hosts: loaded %d entries from %s", loaded, path)
+}
+
+// MatchHashed names hashed entries by testing each candidate against them.
+// Returns how many hashed entries were named.
+func (r *KnownHostsResolver) MatchHashed(candidates []hostCandidate) int {
+	n := 0
+	for _, e := range r.hashed {
+		named := false
+		for _, c := range candidates {
+			if matchHashedHost(e.salt, e.sum, c.match) {
+				r.byFingerprint[e.fingerprint] = appendUnique(r.byFingerprint[e.fingerprint], c.name)
+				named = true
+			}
+		}
+		if named {
+			n++
+		}
+	}
+	return n
+}
+
+// IsKnown reports whether the fingerprint appears in any loaded known_hosts
+// entry, named or hashed.
+func (r *KnownHostsResolver) IsKnown(fingerprint string) bool {
+	return r != nil && r.known[fingerprint]
 }
 
 // Resolve returns the shortest hostname associated with a key fingerprint,

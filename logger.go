@@ -145,10 +145,25 @@ func SignDest(ctx *CallerContext, session *SessionBindInfo) string {
 	if dest == "" {
 		dest = session.DestName()
 	}
+	if dest == "" && session != nil && strings.HasPrefix(session.DestKeyFingerprint, "SHA256:") {
+		// Nothing names the host; show its key so a prompt is still
+		// checkable. "unnamed": the key is in known_hosts.
+		fp := session.DestKeyFingerprint
+		short := fp[:min(len(fp), len("SHA256:")+8)]
+		if session.InKnownHosts() {
+			return "unnamed host " + short
+		}
+		return "unknown host " + short
+	}
 	if dest == "" {
 		dest = "unknown"
 	}
 	return dest
+}
+
+// fileSafeDest makes a destination usable in a log file name.
+func fileSafeDest(dest string) string {
+	return strings.NewReplacer(" ", "-", "/", "_", ":", "_").Replace(dest)
 }
 
 // buildSignEvent creates a logEvent for a sign operation.
@@ -332,7 +347,7 @@ func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *Session
 	if ctx.TmuxWindow != "" {
 		slug += "." + ctx.TmuxWindow
 	}
-	filename := fmt.Sprintf("%s-%s-%s-%s.yaml", now.Format("20060102-150405"), slug, dest, decision)
+	filename := fmt.Sprintf("%s-%s-%s-%s.yaml", now.Format("20060102-150405"), slug, fileSafeDest(dest), decision)
 	logPath := filepath.Join(l.stateDir, filename)
 
 	// Build event and write log file.

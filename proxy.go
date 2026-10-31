@@ -242,6 +242,7 @@ func (p *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, e
 		}
 		if p.knownHosts != nil {
 			info.DestHostname = p.knownHosts.Resolve(info.DestKeyFingerprint)
+			info.DestKnown = p.knownHosts.IsKnown(info.DestKeyFingerprint)
 		}
 		p.bindings = append(p.bindings, info)
 		info.IsForwarded = info.BindingForwarded
@@ -251,10 +252,21 @@ func (p *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, e
 		if !info.IsForwarded {
 			// A local ssh authenticating directly: its command line names
 			// this session's destination. Forwarded agent channels of the
-			// same session inherit that name (see sessionNames).
+			// same session inherit that name (see sessionNames). When the
+			// key is in known_hosts but nothing names it, remember the name
+			// across restarts (learnedNames).
 			sessionNames.Remember(info.SessionID, info.HostKeyBlob, p.caller.SSHDest)
-		} else if info.DestHostname == "" {
-			info.DestAlias = sessionNames.Lookup(info.SessionID, info.HostKeyBlob)
+			if info.DestHostname == "" && info.DestKnown && p.caller.SSHDest != "" {
+				learnedNames.Learn(info.DestKeyFingerprint, p.caller.SSHDest)
+			}
+		}
+		if info.DestHostname == "" {
+			if info.IsForwarded {
+				info.DestAlias = sessionNames.Lookup(info.SessionID, info.HostKeyBlob)
+			}
+			if info.DestAlias == "" && info.DestKnown {
+				info.DestAlias = learnedNames.Lookup(info.DestKeyFingerprint)
+			}
 		}
 		p.session = info
 		if verbose {

@@ -34,7 +34,7 @@ With session-bind, the proxy can populate three policy fields:
   chain forwarded the agent (the remote host is using your agent, not your
   local machine).
 - **`ssh_dest`** -- the hostname of the destination, resolved via
-  known_hosts reverse lookup (see below).
+  known_hosts names (see [Naming destinations](#naming-destinations)).
 - **`is_in_known_hosts`** -- whether the destination host key was
   found in your `~/.ssh/known_hosts`.
 
@@ -97,33 +97,46 @@ running as you or root can reach the forwarded socket. With
 shows the claimed command. The command is chosen by the requester, so
 the label says *a* sudo is pending, not that it is the one you typed.
 
-## known_hosts reverse lookup
+## Naming destinations
 
 The session-bind message contains the destination's host key, but not
-its hostname.  To get a human-readable destination, the proxy
-maintains a reverse index of `~/.ssh/known_hosts`: mapping key
-fingerprints back to hostnames.
+its hostname. The proxy names the key from, in order:
 
-This is what makes rules like `ssh_dest: "*.example.com"` work for
-forwarded sessions, where there's no local `ssh` command line to
-parse.
+1. **Plaintext known_hosts entries** -- every known_hosts file ssh
+   would read: the defaults (`~/.ssh/known_hosts`, `known_hosts2`,
+   `/etc/ssh/ssh_known_hosts`, `ssh_known_hosts2`) plus every
+   `UserKnownHostsFile` and `GlobalKnownHostsFile` in `~/.ssh/config`
+   and its `Include`s, with `~`, `%d`, `%u` and (per candidate name)
+   `%h` expanded.
+2. **Hashed entries** (`HashKnownHosts yes`) -- each is
+   `|1|salt|HMAC-SHA1(salt, host)`. The proxy takes candidate names
+   from the ssh config: every literal `Host` and `Match host` name,
+   every `Hostname`, and their `[host]:port` forms when `Port` is set.
+   It hashes each candidate with the entry's salt; a match names the
+   key with the `Host` alias (`Host curry` / `Hostname 10.66.0.10`
+   names the key `curry`).
+3. **Session carry-over** -- see above.
+4. **Learned names** -- when a local `ssh` authenticates directly to a
+   host whose key is in known_hosts but that steps 1-2 cannot name, the
+   name on its command line is saved in
+   `~/.local/state/ssh-ag/learned-hosts` (fingerprint and name, written
+   only by the proxy, 0600) and reused, also across restarts, as long
+   as the key stays in known_hosts.
 
-### Hashed known_hosts
+A hashed entry counts for `is_in_known_hosts` even when nothing names
+it. The proxy reloads names within ten seconds of a change to the ssh
+config or a known_hosts file, and on SIGHUP.
 
-If you use `HashKnownHosts yes`, your known_hosts entries are
-one-way HMAC-SHA1 hashes.  These cannot be reversed, so the proxy
-skips them.  When all entries are hashed, `ssh_dest` (via
-session-bind) and `is_in_known_hosts` won't work for forwarded
-sessions.
+A key that nothing names is shown as `unnamed host SHA256:xxxxxxxx` (in
+known_hosts) or `unknown host SHA256:xxxxxxxx` (not), so a prompt still
+says which host is asking. `ssh_dest` stays empty for it, so rules such
+as `forwarded-unknown: deny` keep applying. A host first reached from a
+remote machine, never by name from this one, cannot be named: the name
+exists only on the remote.
 
-**Workaround:** Maintain a plaintext known_hosts alongside the hashed
-one using `UserKnownHostsFile` in your ssh_config:
-
-```
-# ~/.ssh/config
-UserKnownHostsFile ~/.ssh/known_hosts ~/.ssh/known_hosts_plain
-HashKnownHosts no  # for the second file
-```
+The state directory holds the learned names along with the PIN
+confirmation FIFOs; isolate it together with the upstream socket (see
+[defense in depth](defense-in-depth.md)).
 
 ## ssh_dest fallback chain
 
@@ -132,15 +145,10 @@ The `ssh_dest` policy field is populated by a multi-step fallback:
 1. **Local command line** -- parse the `ssh` command line of the
    connecting process or its ancestors for the destination argument
    (`ssh user@host`).
-2. **session-bind + known_hosts** -- if no local command line is
-   available (typical for forwarded sessions), use the session-bind
-   host key fingerprint to look up the hostname in known_hosts.
+2. **session-bind** -- if no local command line is available (typical
+   for forwarded sessions), the destination name from the steps above.
 3. **Empty** -- if neither source produces a result, `ssh_dest` is
    empty and won't match any pattern.
-
-This means `ssh_dest` works transparently for both direct SSH
-connections (via command line parsing) and forwarded sessions (via
-session-bind).
 
 ## forwarded_via (mux socket parsing)
 
