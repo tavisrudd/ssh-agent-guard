@@ -237,6 +237,34 @@ destinations:
     action: deny
 ```
 
+### sudo through a forwarded agent (pam_ssh_agent_auth)
+
+With `pam_ssh_agent_auth` on a remote host, `sudo` there asks your
+forwarded agent to sign a challenge. The proxy recognises the
+challenge (`sign_kind: pam`) and exposes its PAM service, command and
+user. A pam request matches only rules that name `sign_kind: pam`, and
+is denied when none does, so existing forwarded rules never approve
+sudo by accident:
+
+```yaml
+  - name: sudo-or3
+    match:
+      sign_kind: pam
+      pam_service: sudo
+      is_forwarded: true
+      ssh_dest: "or3*"
+    action: confirm
+
+  - name: pam-elsewhere
+    match:
+      sign_kind: pam
+    action: deny
+```
+
+The journal, status bar and PIN popup show the request as
+`sudo@or3: sudo true`. See [forwarding](forwarding.md#sudo-via-pam_ssh_agent_auth)
+for what is and is not verified.
+
 ### Container policies
 
 `is_in_container` is true when the caller's PID namespace differs

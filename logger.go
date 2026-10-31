@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
@@ -31,6 +32,8 @@ type logEvent struct {
 	ForwardedVia          string            `yaml:"forwarded_via,omitempty"`
 	IsForwarded           *bool             `yaml:"is_forwarded,omitempty"`
 	DestKeyFingerprint    string            `yaml:"dest_key_fingerprint,omitempty"`
+	SignKind              string            `yaml:"sign_kind,omitempty"`
+	Pam                   *logPam           `yaml:"pam,omitempty"`
 	LocalCWD              string            `yaml:"local_cwd"`
 	Cgroup                string            `yaml:"cgroup,omitempty"`
 	UserPresence          string            `yaml:"user_presence"`
@@ -47,6 +50,19 @@ type logEvent struct {
 	Env                   map[string]string `yaml:"env,omitempty"`
 	LocalProcTree         []logAncestor     `yaml:"local_proc_tree,omitempty"`
 	Forensics             *DenyForensics    `yaml:"forensics,omitempty"`
+}
+
+// logPam records a pam_ssh_agent_auth challenge. Every field except
+// host_matches_dest is claimed by the requester, not verified.
+type logPam struct {
+	Service         string   `yaml:"service"`
+	User            string   `yaml:"user"`
+	RUser           string   `yaml:"ruser"`
+	Command         []string `yaml:"command,omitempty"`
+	CWD             string   `yaml:"cwd,omitempty"`
+	Host            string   `yaml:"host"`
+	HostMatchesDest bool     `yaml:"host_matches_dest"`
+	Timestamp       string   `yaml:"timestamp"`
 }
 
 type logAncestor struct {
@@ -126,8 +142,8 @@ func NewLogger(stateDir string, policy *Policy) *Logger {
 // SignDest returns the best destination string for a sign event.
 func SignDest(ctx *CallerContext, session *SessionBindInfo) string {
 	dest := ctx.SSHDest
-	if dest == "" && session != nil && session.DestHostname != "" {
-		dest = session.DestHostname
+	if dest == "" {
+		dest = session.DestName()
 	}
 	if dest == "" {
 		dest = "unknown"
@@ -181,6 +197,25 @@ func buildSignEvent(ts time.Time, ctx *CallerContext, key ssh.PublicKey, session
 	if session != nil {
 		ev.IsForwarded = &session.IsForwarded
 		ev.DestKeyFingerprint = session.DestKeyFingerprint
+	}
+	if req := result.Request; req != nil {
+		ev.SignKind = string(req.Kind)
+		if req.Pam != nil {
+			argv := make([]string, len(req.Pam.Argv))
+			for i, a := range req.Pam.Argv {
+				argv[i] = sanitizeDisplay(a, pamMaxArgLen)
+			}
+			ev.Pam = &logPam{
+				Service:         sanitizeDisplay(req.Pam.Service, 64),
+				User:            sanitizeDisplay(req.Pam.User, 64),
+				RUser:           sanitizeDisplay(req.Pam.RUser, 64),
+				Command:         argv,
+				CWD:             sanitizeDisplay(req.Pam.CWD, pamMaxCWD),
+				Host:            sanitizeDisplay(req.Pam.Hostname, 64),
+				HostMatchesDest: sameHost(req.Pam.Hostname, session.DestName()),
+				Timestamp:       req.Pam.Timestamp.Format("2006-01-02T15:04:05"),
+			}
+		}
 	}
 
 	for _, a := range ctx.Ancestry {
@@ -242,15 +277,15 @@ func (l *Logger) UpdateSignStatus(ctx *CallerContext, key ssh.PublicKey, session
 	if ctx.IsContainer {
 		container = " container=true"
 	}
-	log.Printf("sign: %s → %s%s [%s/%s] (key %s) pid=%d%s",
-		ctx.Name, dest, via, result.Action, result.RuleName, fingerprint[:19], ctx.PID, container)
+	log.Printf("sign: %s → %s%s%s [%s/%s] (key %s) pid=%d%s",
+		ctx.Name, dest, via, requestSuffix(result.Request), result.Action, result.RuleName, fingerprint[:19], ctx.PID, container)
 }
 
 // SetConfirming updates current.yaml to show a pending confirmation.
 // Called from evalAndConfirm before the actual confirmation method runs.
 func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result EvalResult) {
 	dest := SignDest(ctx, session)
-	summary := buildSummary(ctx, session, fmt.Sprintf("sign %s", dest))
+	summary := buildSummary(ctx, session, signDetail(dest, result.Request))
 
 	var text string
 	switch result.ConfirmMethod {
@@ -319,8 +354,8 @@ func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *Session
 	if result.ConfirmMethod != "" {
 		method = fmt.Sprintf(" method=%s", result.ConfirmMethod)
 	}
-	log.Printf("sign: %s → %s%s [%s/%s]%s (key %s) pid=%d",
-		ctx.Name, dest, via, decision, result.RuleName, method, fingerprint[:19], ctx.PID)
+	log.Printf("sign: %s → %s%s%s [%s/%s]%s (key %s) pid=%d",
+		ctx.Name, dest, via, requestSuffix(result.Request), decision, result.RuleName, method, fingerprint[:19], ctx.PID)
 
 	if result.ConfirmError != "" {
 		log.Printf("sign: %s → %s: %s", ctx.Name, dest, result.ConfirmError)
@@ -333,7 +368,7 @@ func (l *Logger) LogSign(ctx *CallerContext, key ssh.PublicKey, session *Session
 	defer l.mu.Unlock()
 
 	l.previous = ev
-	summary := buildSummary(ctx, session, fmt.Sprintf("sign %s", dest))
+	summary := buildSummary(ctx, session, signDetail(dest, result.Request))
 	if result.ConfirmError != "" {
 		reason, _, _ := strings.Cut(result.ConfirmError, ";")
 		if strings.Contains(reason, "is not enrolled") {
@@ -531,6 +566,24 @@ func writeLogFile(path string, ev *logEvent) {
 	}
 }
 
+// requestSuffix is the journal annotation for a classified request:
+// " sudo@or3: sudo true" for pam, "" otherwise.
+func requestSuffix(req *SignRequest) string {
+	if label := req.Label(); label != "" {
+		return " " + label
+	}
+	return ""
+}
+
+// signDetail is the status-bar detail for a sign request. A pam request shows
+// what it claims to authorize instead of the destination.
+func signDetail(dest string, req *SignRequest) string {
+	if label := req.Label(); label != "" {
+		return label
+	}
+	return fmt.Sprintf("sign %s", dest)
+}
+
 func buildSummary(ctx *CallerContext, session *SessionBindInfo, detail string) string {
 	prefix := ""
 	if ctx.CodingAgentName != "" {
@@ -545,7 +598,11 @@ func buildSummary(ctx *CallerContext, session *SessionBindInfo, detail string) s
 	}
 	summary := fmt.Sprintf("%s%s: %s%s", prefix, ctx.Name, detail, suffix)
 	if len(summary) > 60 {
-		summary = summary[:60]
+		cut := 60
+		for cut > 0 && !utf8.RuneStart(summary[cut]) {
+			cut--
+		}
+		summary = summary[:cut]
 	}
 	return summary
 }

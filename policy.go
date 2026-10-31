@@ -152,6 +152,10 @@ type MatchSpec struct {
 	IsInContainer     *bool             `yaml:"is_in_container,omitempty"`
 	IsCodingAgent     *bool             `yaml:"is_coding_agent,omitempty"`
 	Env               map[string]string `yaml:"env,omitempty"`
+	SignKind          string            `yaml:"sign_kind,omitempty"`
+	PamService        string            `yaml:"pam_service,omitempty"`
+	PamCommand        string            `yaml:"pam_command,omitempty"`
+	PamUser           string            `yaml:"pam_user,omitempty"`
 }
 
 // StringOrList handles YAML values that can be a single string or a list.
@@ -274,6 +278,10 @@ type compiledMatch struct {
 	isInContainer     *bool
 	isCodingAgent     *bool
 	env               map[string]string
+	signKind          SignKind
+	pamService        *matchPattern
+	pamCommand        *matchPattern
+	pamUser           *matchPattern
 }
 
 // matchPattern is either a glob or regex pattern.
@@ -696,6 +704,16 @@ func compileMatch(m MatchSpec) (compiledMatch, error) {
 		isInContainer:     m.IsInContainer,
 		isCodingAgent:     m.IsCodingAgent,
 		env:               m.Env,
+		signKind:          SignKind(m.SignKind),
+		pamService:        compile("pam_service", m.PamService),
+		pamCommand:        compile("pam_command", m.PamCommand),
+		pamUser:           compile("pam_user", m.PamUser),
+	}
+	if m.SignKind != "" && !validSignKind(m.SignKind) {
+		errs = append(errs, fmt.Sprintf("sign_kind: %q is not one of userauth, pam, other", m.SignKind))
+	}
+	if (m.PamService != "" || m.PamCommand != "" || m.PamUser != "") && cm.signKind != SignKindPam {
+		errs = append(errs, "pam_service, pam_command and pam_user require sign_kind: pam")
 	}
 	if len(errs) > 0 {
 		return cm, fmt.Errorf("%s", strings.Join(errs, "; "))
@@ -707,25 +725,73 @@ func compileMatch(m MatchSpec) (compiledMatch, error) {
 type EvalResult struct {
 	ConfirmError  string // actionable explanation for failed confirmation
 	Action        Action
-	RuleName      string // "default" if no rule matched
-	Confirmed     *bool  // nil unless action was confirm; true=touched, false=denied
-	ConfirmMethod string // "touch", "pin", "missing" — set when Action==Confirm
+	RuleName      string       // "default" if no rule matched
+	Confirmed     *bool        // nil unless action was confirm; true=touched, false=denied
+	ConfirmMethod string       // "touch", "pin", "missing" — set when Action==Confirm
+	Request       *SignRequest // what the signed data is for; nil when unknown
 }
 
-// Evaluate checks a sign request against all rules. First match wins.
+// Evaluate checks a sign request of unknown kind against all rules.
 func (p *Policy) Evaluate(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string) EvalResult {
+	return p.EvaluateRequest(ctx, session, keyFingerprint, nil)
+}
+
+// EvaluateRequest checks a classified sign request against all rules. First
+// match wins. A pam request matches only rules that name sign_kind: pam, and
+// is denied when none does, so broad rules written before pam support never
+// approve one.
+func (p *Policy) EvaluateRequest(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string, req *SignRequest) EvalResult {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	for _, r := range p.rules {
-		if r.match.matches(ctx, session, keyFingerprint) {
-			return EvalResult{Action: r.action, RuleName: r.name}
+		if r.match.matches(ctx, session, keyFingerprint, req) {
+			return EvalResult{Action: r.action, RuleName: r.name, Request: req}
 		}
 	}
-	return EvalResult{Action: p.defaultAction, RuleName: "default"}
+	if req != nil && req.Kind == SignKindPam {
+		return EvalResult{Action: Deny, RuleName: "default-pam", Request: req}
+	}
+	return EvalResult{Action: p.defaultAction, RuleName: "default", Request: req}
 }
 
-func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string) bool {
+// signKindMismatch reports why a rule's sign_kind / pam_* fields reject req,
+// or "" when they accept it.
+func (m *compiledMatch) signKindMismatch(req *SignRequest) string {
+	kind := SignKind("")
+	if req != nil {
+		kind = req.Kind
+	}
+	if m.signKind == "" {
+		if kind == SignKindPam {
+			return "sign_kind: pam requests match only rules with sign_kind: pam"
+		}
+		return ""
+	}
+	if kind != m.signKind {
+		return fmt.Sprintf("sign_kind: want %q, got %q", m.signKind, kind)
+	}
+	if kind != SignKindPam {
+		return ""
+	}
+	pam := req.Pam
+	if !m.pamService.matchString(pam.Service) {
+		return fmt.Sprintf("pam_service: want %q, got %q", m.pamService.raw, sanitizeDisplay(pam.Service, 64))
+	}
+	if !m.pamCommand.matchString(pam.Command()) {
+		return fmt.Sprintf("pam_command: want %q, got %q", m.pamCommand.raw, pam.Command())
+	}
+	if !m.pamUser.matchString(pam.User) {
+		return fmt.Sprintf("pam_user: want %q, got %q", m.pamUser.raw, sanitizeDisplay(pam.User, 64))
+	}
+	return ""
+}
+
+func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string, req *SignRequest) bool {
+	if m.signKindMismatch(req) != "" {
+		return false
+	}
+
 	// process_name: string or list — match CallerContext.Name
 	if len(m.processName) > 0 {
 		if !stringInList(ctx.Name, m.processName) {
@@ -766,7 +832,7 @@ func (m *compiledMatch) matches(ctx *CallerContext, session *SessionBindInfo, ke
 	// ssh_dest: the final SSH destination (from cmdline, falling back to session-bind)
 	sshDest := ctx.SSHDest
 	if sshDest == "" && session != nil {
-		sshDest = session.DestHostname
+		sshDest = session.DestName()
 	}
 	if !matchSSHDest(m.sshDest, sshDest) {
 		return false
@@ -863,12 +929,17 @@ type RuleCheckResult struct {
 // EvaluateVerbose evaluates all rules and returns detailed match info for each.
 // Used by the check subcommand for debugging policy configuration.
 func (p *Policy) EvaluateVerbose(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string) []RuleCheckResult {
+	return p.EvaluateVerboseRequest(ctx, session, keyFingerprint, nil)
+}
+
+// EvaluateVerboseRequest is EvaluateVerbose for a classified sign request.
+func (p *Policy) EvaluateVerboseRequest(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string, req *SignRequest) []RuleCheckResult {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	var results []RuleCheckResult
 	for _, r := range p.rules {
-		mismatches := r.match.checkMismatches(ctx, session, keyFingerprint)
+		mismatches := r.match.checkMismatches(ctx, session, keyFingerprint, req)
 		results = append(results, RuleCheckResult{
 			Name:       r.name,
 			Action:     r.action.String(),
@@ -880,8 +951,12 @@ func (p *Policy) EvaluateVerbose(ctx *CallerContext, session *SessionBindInfo, k
 }
 
 // checkMismatches returns which fields don't match. Empty slice = full match.
-func (m *compiledMatch) checkMismatches(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string) []string {
+func (m *compiledMatch) checkMismatches(ctx *CallerContext, session *SessionBindInfo, keyFingerprint string, req *SignRequest) []string {
 	var mm []string
+
+	if why := m.signKindMismatch(req); why != "" {
+		mm = append(mm, why)
+	}
 
 	if len(m.processName) > 0 && !stringInList(ctx.Name, m.processName) {
 		mm = append(mm, fmt.Sprintf("process_name: want %v, got %q", m.processName, ctx.Name))
@@ -912,7 +987,7 @@ func (m *compiledMatch) checkMismatches(ctx *CallerContext, session *SessionBind
 	}
 	sshDest := ctx.SSHDest
 	if sshDest == "" && session != nil {
-		sshDest = session.DestHostname
+		sshDest = session.DestName()
 	}
 	if !matchSSHDest(m.sshDest, sshDest) {
 		mm = append(mm, fmt.Sprintf("ssh_dest: want %q, got %q", m.sshDest.raw, sshDest))
@@ -1089,6 +1164,9 @@ func onlyDiffersInSSHDest(a, b compiledMatch) bool {
 		return false
 	}
 	if len(a.env) != 0 || len(b.env) != 0 {
+		return false
+	}
+	if a.signKind != "" || b.signKind != "" {
 		return false
 	}
 	return true

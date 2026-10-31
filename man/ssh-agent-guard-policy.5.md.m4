@@ -210,6 +210,37 @@ Parsed from the mux process command line
 Whether the agent connection is forwarded (from a remote SSH session)
 as reported by the **session-bind@openssh.com** extension.
 
+**sign_kind:** *userauth* | *pam* | *other*
+: What the signed data is for.
+*userauth* is an SSH login (the only kind accepted when the last
+session-bind is for authentication).
+*pam* is a **pam_ssh_agent_auth**(8) challenge, e.g. sudo on a host you
+reached with **ssh -A** (the only kind accepted when the last session-bind
+is for forwarding).
+*other* is anything else from a local caller with no session-bind, such
+as an SSHSIG for git signing.
+A *pam* request matches only rules that set **sign_kind: pam**; when none
+matches it is denied (rule *default-pam*), whatever **default_action** says.
+
+**pam_service:** *pattern*
+: Glob or regex against the PAM service named in a *pam* challenge
+(*sudo*).  Requires **sign_kind: pam**.
+
+**pam_command:** *pattern*
+: Glob or regex against the command line in a *pam* challenge, arguments
+joined by spaces, with the program reduced to its base name
+(*sudo nixos-rebuild switch*, even when sudo runs from a Nix store path).  Requires **sign_kind: pam**.
+
+**pam_user:** *pattern*
+: Glob or regex against the PAM user in a *pam* challenge.  Requires
+**sign_kind: pam**.
+
+The *pam_\** fields are written by the remote host and are claims, not
+facts.  Before policy runs, a forwarded *pam* challenge is denied when its
+hostname does not name the session-bind destination (*pam-host-mismatch*),
+when the destination has no name (*pam-dest-unknown*), or when its
+timestamp is more than five minutes from local time (*pam-stale*).
+
 **key:** *prefix*
 : Prefix match against the key fingerprint (*SHA256:...*).
 Allows matching specific keys without specifying the full fingerprint.

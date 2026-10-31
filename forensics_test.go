@@ -83,7 +83,7 @@ func TestCollectDenyForensics(t *testing.T) {
 		},
 	}
 
-	f := collectDenyForensics(caller, nil, "SHA256:test", policy, 3)
+	f := collectDenyForensics(caller, nil, "SHA256:test", policy, 3, nil)
 	if f == nil {
 		t.Fatal("collectDenyForensics returned nil")
 	}

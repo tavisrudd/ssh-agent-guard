@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -18,10 +19,78 @@ import (
 type SessionBindInfo struct {
 	DestKeyFingerprint string // SHA256 fingerprint of the destination host key
 	DestHostname       string // resolved via known_hosts reverse lookup
+	DestAlias          string // name carried over from the local ssh that authenticated this session
 	IsForwarded        bool   // true when any earlier hop forwarded the agent
 	SessionID          []byte // authenticated SSH session identifier (not logged)
 	BindingForwarded   bool   // forwarding flag for this individual binding
 	HostKeyBlob        []byte // authenticated destination key (not logged)
+}
+
+// DestName returns the best name for the destination: the known_hosts name,
+// else the name carried over from the authenticating connection.
+func (s *SessionBindInfo) DestName() string {
+	if s == nil {
+		return ""
+	}
+	if s.DestHostname != "" {
+		return s.DestHostname
+	}
+	return s.DestAlias
+}
+
+// sessionNames remembers, across connections, the destination name a local
+// ssh client used when it authenticated a session. OpenSSH opens a new agent
+// connection for each forwarded agent channel and binds the same session
+// (same host key, same session id, verified by the host key signature) with
+// the forwarding flag set; that connection has no local command line naming
+// the destination, so it inherits the name from here. In memory only: after
+// a restart forwarded sessions resolve to no name and fail closed.
+type sessionNameEntry struct {
+	hostKey []byte
+	name    string
+}
+
+type sessionNameCache struct {
+	mu      sync.Mutex
+	entries map[string]sessionNameEntry
+	order   []string
+	max     int
+}
+
+var sessionNames = newSessionNameCache(256)
+
+func newSessionNameCache(max int) *sessionNameCache {
+	return &sessionNameCache{entries: make(map[string]sessionNameEntry), max: max}
+}
+
+func (c *sessionNameCache) Remember(sessionID, hostKey []byte, name string) {
+	if name == "" {
+		return
+	}
+	if i := strings.LastIndex(name, "@"); i >= 0 {
+		name = name[i+1:]
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := string(sessionID)
+	if _, ok := c.entries[k]; !ok {
+		c.order = append(c.order, k)
+		if len(c.order) > c.max {
+			delete(c.entries, c.order[0])
+			c.order = c.order[1:]
+		}
+	}
+	c.entries[k] = sessionNameEntry{hostKey: append([]byte(nil), hostKey...), name: name}
+}
+
+func (c *sessionNameCache) Lookup(sessionID, hostKey []byte) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[string(sessionID)]
+	if !ok || !bytes.Equal(e.hostKey, hostKey) {
+		return ""
+	}
+	return e.name
 }
 
 const (

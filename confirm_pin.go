@@ -20,7 +20,7 @@ import (
 // ConfirmPIN writes a pending confirmation request and waits for a response.
 // The user is notified via tmux status bar (by the caller's SetConfirming) and
 // activates the confirm prompt with a tmux keybinding which runs ssh-ag-confirm.
-func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext, session *SessionBindInfo, key ssh.PublicKey) bool {
+func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext, session *SessionBindInfo, key ssh.PublicKey, req *SignRequest) bool {
 	// Create pending directory
 	if err := os.MkdirAll(c.PendingDir, 0700); err != nil {
 		log.Printf("confirm_pin: mkdir %s: %v", c.PendingDir, err)
@@ -37,7 +37,7 @@ func (c *ConfirmConfig) ConfirmPIN(parent context.Context, caller *CallerContext
 
 	// Write request details for the helper to display
 	reqPath := filepath.Join(c.PendingDir, reqID+".yaml")
-	if err := c.writeRequest(reqPath, caller, session, key, nonce); err != nil {
+	if err := c.writeRequest(reqPath, caller, session, key, nonce, req); err != nil {
 		log.Printf("confirm_pin: write request: %v", err)
 		return false
 	}
@@ -130,7 +130,7 @@ func (c *ConfirmConfig) verifyPIN(ctx context.Context, pin []byte, denyCh <-chan
 // writeRequest writes the confirm request details as YAML for the helper.
 // The nonce is included so the daemon can correlate the FIFO response with
 // this request. It is not an authenticator; PendingDir must be protected.
-func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session *SessionBindInfo, key ssh.PublicKey, nonce string) error {
+func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session *SessionBindInfo, key ssh.PublicKey, nonce string, req *SignRequest) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
 		return err
@@ -150,6 +150,13 @@ func (c *ConfirmConfig) writeRequest(path string, caller *CallerContext, session
 	}
 	if caller.CWD != "" {
 		fmt.Fprintf(f, "cwd: %s\n", caller.CWD)
+	}
+	// Remote-supplied pam fields come last and are sanitized to one line, so
+	// they cannot shadow the fields above in the helper's line parser.
+	if label := req.Label(); label != "" {
+		fmt.Fprintf(f, "request: %s\n", label)
+		fmt.Fprintf(f, "pam_user: %s\n", sanitizeDisplay(req.Pam.RUser, 64)+" as "+sanitizeDisplay(req.Pam.User, 64))
+		fmt.Fprintf(f, "pam_cwd: %s\n", sanitizeDisplay(req.Pam.CWD, 256))
 	}
 	return nil
 }

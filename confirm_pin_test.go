@@ -80,7 +80,7 @@ func TestDeniedPINIsNotLogged(t *testing.T) {
 	key, _ := ssh.NewPublicKey(priv.Public())
 	resultCh := make(chan bool, 1)
 	go func() {
-		resultCh <- cfg.ConfirmPIN(context.Background(), &CallerContext{Name: "ssh", SSHDest: "example.com"}, nil, key)
+		resultCh <- cfg.ConfirmPIN(context.Background(), &CallerContext{Name: "ssh", SSHDest: "example.com"}, nil, key, nil)
 	}()
 
 	fifoPath := waitForPendingFile(t, cfg.PendingDir, "*.result")

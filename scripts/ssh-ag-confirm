@@ -81,6 +81,9 @@ KEY=$(field key)
 NONCE=$(field nonce)
 WINDOW=$(field tmux_window)
 CWD=$(field cwd)
+REQUEST=$(field request)
+PAM_USER=$(field pam_user)
+PAM_CWD=$(field pam_cwd)
 
 # Display request details
 echo ""
@@ -91,6 +94,12 @@ echo "  Caller:  ${CALLER:-unknown}"
 echo "  Dest:    ${DEST:-unknown}"
 echo "  Key:     ${KEY:-unknown}"
 [ -n "${CWD:-}" ] && echo "  CWD:     $CWD"
+if [ -n "${REQUEST:-}" ]; then
+    echo ""
+    echo "  Request: $REQUEST   (claimed by the remote host)"
+    [ -n "${PAM_USER:-}" ] && echo "  User:    $PAM_USER"
+    [ -n "${PAM_CWD:-}" ] && echo "  In:      $PAM_CWD"
+fi
 echo ""
 
 # Prompt for PIN

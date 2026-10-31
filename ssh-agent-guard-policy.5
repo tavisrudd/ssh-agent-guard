@@ -230,6 +230,41 @@ Whether the agent connection is forwarded (from a remote SSH session)
 as reported by the \fBsession-bind@openssh.com\fP extension.
 
 .TP
+\fBsign_kind:\fP \fIuserauth\fP | \fIpam\fP | \fIother\fP
+What the signed data is for.
+\fIuserauth\fP is an SSH login (the only kind accepted when the last
+session-bind is for authentication).
+\fIpam\fP is a \fBpam_ssh_agent_auth\fP(8) challenge, e.g. sudo on a host you
+reached with \fBssh -A\fP (the only kind accepted when the last session-bind
+is for forwarding).
+\fIother\fP is anything else from a local caller with no session-bind, such
+as an SSHSIG for git signing.
+A \fIpam\fP request matches only rules that set \fBsign_kind: pam\fP; when none
+matches it is denied (rule \fIdefault-pam\fP), whatever \fBdefault_action\fP says.
+
+.TP
+\fBpam_service:\fP \fIpattern\fP
+Glob or regex against the PAM service named in a \fIpam\fP challenge
+(\fIsudo\fP).  Requires \fBsign_kind: pam\fP\&.
+
+.TP
+\fBpam_command:\fP \fIpattern\fP
+Glob or regex against the command line in a \fIpam\fP challenge, arguments
+joined by spaces, with the program reduced to its base name
+(\fIsudo nixos-rebuild switch\fP, even when sudo runs from a Nix store path).  Requires \fBsign_kind: pam\fP\&.
+
+.TP
+\fBpam_user:\fP \fIpattern\fP
+Glob or regex against the PAM user in a \fIpam\fP challenge.  Requires
+\fBsign_kind: pam\fP\&.
+
+.PP
+The \fIpam_*\fP fields are written by the remote host and are claims, not
+facts.  Before policy runs, a forwarded \fIpam\fP challenge is denied when its
+hostname does not name the session-bind destination (\fIpam-host-mismatch\fP),
+when the destination has no name (\fIpam-dest-unknown\fP), or when its
+timestamp is more than five minutes from local time (\fIpam-stale\fP).
+.TP
 \fBkey:\fP \fIprefix\fP
 Prefix match against the key fingerprint (\fISHA256:...\fP).
 Allows matching specific keys without specifying the full fingerprint.

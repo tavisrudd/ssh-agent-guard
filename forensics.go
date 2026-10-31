@@ -8,9 +8,10 @@ import (
 // DenyForensics holds additional context collected only for denied requests.
 // Attached to logEvent.Forensics when a sign or mutation request is denied.
 type DenyForensics struct {
-	SignRequestNum int               `yaml:"sign_request_num,omitempty"`
-	ProcessAge     string            `yaml:"process_age,omitempty"`
-	RuleTrace      []RuleCheckResult `yaml:"rule_trace,omitempty"`
+	SignRequestNum  int               `yaml:"sign_request_num,omitempty"`
+	ValidationError string            `yaml:"validation_error,omitempty"`
+	ProcessAge      string            `yaml:"process_age,omitempty"`
+	RuleTrace       []RuleCheckResult `yaml:"rule_trace,omitempty"`
 }
 
 // collectDenyForensics gathers forensic context for a denied sign request.
@@ -22,6 +23,7 @@ func collectDenyForensics(
 	keyFingerprint string,
 	policy *Policy,
 	signRequestNum int,
+	req *SignRequest,
 ) *DenyForensics {
 	f := &DenyForensics{
 		SignRequestNum: signRequestNum,
@@ -34,7 +36,7 @@ func collectDenyForensics(
 
 	// Rule evaluation trace (platform-neutral)
 	if policy != nil {
-		f.RuleTrace = policy.EvaluateVerbose(caller, session, keyFingerprint)
+		f.RuleTrace = policy.EvaluateVerboseRequest(caller, session, keyFingerprint, req)
 	}
 
 	return f

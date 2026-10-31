@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -78,15 +79,22 @@ func (p *ProxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.S
 //   - No display + no YubiKey → deny ("missing")
 func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 	keyFP := ssh.FingerprintSHA256(key)
-	if err := p.validateSessionForSign(data, key); err != nil {
-		result := EvalResult{Action: Deny, RuleName: "session-bind-validation"}
-		log.Printf("sign: invalid session binding for %s pid=%d: %v", p.caller.Name, p.caller.PID, err)
+	req, err := p.classifySignRequest(data, key, time.Now())
+	if err != nil {
+		rule := "session-bind-validation"
+		var sve *signValidationError
+		if errors.As(err, &sve) {
+			rule = sve.rule
+		}
+		result := EvalResult{Action: Deny, RuleName: rule, Request: req}
+		log.Printf("sign: invalid sign request for %s pid=%d: %v", p.caller.Name, p.caller.PID, err)
 		p.logger.UpdateSignStatus(p.caller, key, p.session, result)
-		forensics := collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount)
+		forensics := collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount, req)
+		forensics.ValidationError = err.Error()
 		p.logger.LogSign(p.caller, key, p.session, result, forensics)
 		return result
 	}
-	result := p.policy.Evaluate(p.caller, p.session, keyFP)
+	result := p.policy.EvaluateRequest(p.caller, p.session, keyFP, req)
 
 	// Update status bar immediately
 	p.logger.UpdateSignStatus(p.caller, key, p.session, result)
@@ -94,7 +102,7 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 	if result.Action != Confirm {
 		var forensics *DenyForensics
 		if result.Action == Deny {
-			forensics = collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount)
+			forensics = collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount, req)
 		}
 		p.logger.LogSign(p.caller, key, p.session, result, forensics)
 		return result
@@ -109,7 +117,7 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 				n-1, max, p.caller.Name, dest)
 			result.Action = Deny
 			result.ConfirmMethod = "rate-limited"
-			forensics := collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount)
+			forensics := collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount, req)
 			p.logger.LogSign(p.caller, key, p.session, result, forensics)
 			return result
 		}
@@ -142,7 +150,7 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 		ok, result.ConfirmError = p.confirmCfg.confirmHMAC(p.ctx)
 	case "pin":
 		log.Printf("confirm: method=pin for %s → %s", p.caller.Name, dest)
-		ok = p.confirmCfg.ConfirmPIN(p.ctx, p.caller, p.session, key)
+		ok = p.confirmCfg.ConfirmPIN(p.ctx, p.caller, p.session, key, req)
 	default:
 		log.Printf("confirm: method=missing (no display, no YubiKey) for %s → %s", p.caller.Name, dest)
 		ok = false
@@ -157,7 +165,7 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 
 	var forensics *DenyForensics
 	if result.Action == Deny {
-		forensics = collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount)
+		forensics = collectDenyForensics(p.caller, p.session, keyFP, p.policy, p.signCount, req)
 	}
 	p.logger.LogSign(p.caller, key, p.session, result, forensics)
 	return result
@@ -240,10 +248,18 @@ func (p *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, e
 		for _, binding := range p.bindings[:len(p.bindings)-1] {
 			info.IsForwarded = info.IsForwarded || binding.BindingForwarded
 		}
+		if !info.IsForwarded {
+			// A local ssh authenticating directly: its command line names
+			// this session's destination. Forwarded agent channels of the
+			// same session inherit that name (see sessionNames).
+			sessionNames.Remember(info.SessionID, info.HostKeyBlob, p.caller.SSHDest)
+		} else if info.DestHostname == "" {
+			info.DestAlias = sessionNames.Lookup(info.SessionID, info.HostKeyBlob)
+		}
 		p.session = info
 		if verbose {
 			log.Printf("session-bind: dest=%s fp=%s forwarded-chain=%v caller=%s pid=%d",
-				info.DestHostname, info.DestKeyFingerprint[:19], info.IsForwarded,
+				info.DestName(), info.DestKeyFingerprint[:19], info.IsForwarded,
 				p.caller.Name, p.caller.PID)
 		}
 
@@ -305,15 +321,51 @@ func (p *ProxyAgent) validateNextBinding(info *SessionBindInfo) (bool, error) {
 }
 
 func (p *ProxyAgent) validateSessionForSign(data []byte, key ssh.PublicKey) error {
+	_, err := p.classifySignRequest(data, key, time.Now())
+	return err
+}
+
+// classifySignRequest validates sign data against the connection's binding
+// chain and says what it is for:
+//   - no bindings (local caller): pam if it parses as a pam_ssh_agent_auth
+//     challenge, otherwise other;
+//   - last binding for authentication: must be userauth for that session;
+//   - last binding for forwarding: only a pam_ssh_agent_auth challenge, whose
+//     claimed hostname must name the bound destination and whose timestamp
+//     must be fresh.
+//
+// On error the returned request (possibly nil) is what was recognised, for
+// logging.
+func (p *ProxyAgent) classifySignRequest(data []byte, key ssh.PublicKey, now time.Time) (*SignRequest, error) {
+	pam, pamErr := parsePamAgentAuthSignData(data, key)
+	var pamReq *SignRequest
+	if pamErr == nil {
+		pamReq = &SignRequest{Kind: SignKindPam, Pam: pam}
+	}
 	if p.sessionInvalid {
-		return errors.New("session-bind validation previously failed")
+		return pamReq, errors.New("session-bind validation previously failed")
 	}
 	if len(p.bindings) == 0 {
-		return nil
+		if pamReq != nil {
+			return pamReq, nil
+		}
+		return &SignRequest{Kind: SignKindOther}, nil
 	}
 	last := p.bindings[len(p.bindings)-1]
 	if last.BindingForwarded {
-		return errors.New("last binding is for forwarding, not authentication")
+		if pamReq == nil {
+			if errors.Is(pamErr, errNotPamChallenge) {
+				return nil, errors.New("last binding is for forwarding, not authentication")
+			}
+			return nil, fmt.Errorf("last binding is for forwarding: %w", pamErr)
+		}
+		if sve := checkPamBinding(pam, p.session.DestName(), now); sve != nil {
+			return pamReq, sve
+		}
+		return pamReq, nil
 	}
-	return validateUserauthSignData(data, last, key, p.session.IsForwarded)
+	if err := validateUserauthSignData(data, last, key, p.session.IsForwarded); err != nil {
+		return nil, err
+	}
+	return &SignRequest{Kind: SignKindUserauth}, nil
 }
