@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -35,9 +36,40 @@ type ConfirmConfig struct {
 	// Explicit deny (touch file to cancel any pending confirm)
 	DenyPath string
 
-	// Rate limiting: max concurrent pending confirmations (0 = unlimited)
+	// Rate limiting: max pending confirmations, waiting for the YubiKey
+	// or holding it (0 = unlimited)
 	MaxPending int
 }
+
+// yubikeySem serializes YubiKey use across all connections. The key
+// answers one process at a time: a concurrent ykinfo fails (read as "no
+// YubiKey") and a concurrent ykchalresp exits 1, so parallel sign
+// requests (git pushing several repositories at once) were denied before
+// any touch could count. The holder keeps it through the touch wait, so
+// requests are prompted one after another.
+var yubikeySem = make(chan struct{}, 1)
+
+// acquireYubiKey waits for the YubiKey until ctx ends or deny fires (nil
+// deny never fires). On success the caller must call release.
+func acquireYubiKey(ctx context.Context, deny <-chan struct{}) (release func(), err error) {
+	release = func() { <-yubikeySem }
+	select {
+	case yubikeySem <- struct{}{}:
+		return release, nil
+	default:
+	}
+	log.Printf("confirm: YubiKey in use by another request; waiting")
+	select {
+	case yubikeySem <- struct{}{}:
+		return release, nil
+	case <-deny:
+		return nil, errDenied
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+var errDenied = errors.New("explicitly denied")
 
 func DefaultConfirmConfig() ConfirmConfig {
 	return ConfirmConfig{
@@ -46,7 +78,7 @@ func DefaultConfirmConfig() ConfirmConfig {
 		Timeout:    20 * time.Second,
 		PINSlot:    "1",
 		PINTimeout: 120 * time.Second,
-		MaxPending: 3,
+		MaxPending: 8,
 	}
 }
 
@@ -134,8 +166,14 @@ func findBin(name string) string {
 var serialRe = regexp.MustCompile(`\d+`)
 var procPIDRe = regexp.MustCompile(`^[0-9]+$`)
 
-// HasYubiKey checks if a YubiKey is currently connected.
-func (c *ConfirmConfig) HasYubiKey() bool {
+// HasYubiKey checks if a YubiKey is currently connected, waiting for
+// any request using it.
+func (c *ConfirmConfig) HasYubiKey(ctx context.Context) bool {
+	release, err := acquireYubiKey(ctx, nil)
+	if err != nil {
+		return false
+	}
+	defer release()
 	return c.getSerial() != ""
 }
 
@@ -150,6 +188,24 @@ func (c *ConfirmConfig) ConfirmHMAC(parent context.Context) bool {
 
 // confirmHMAC returns an actionable reason when confirmation fails.
 func (c *ConfirmConfig) confirmHMAC(parent context.Context) (bool, string) {
+	// The deny file cancels from the request's start, including while it
+	// waits for the YubiKey.
+	startTime := time.Now()
+
+	// Wait for our turn on the YubiKey (cancelled if the client
+	// disconnects or the deny file is touched). The touch timeout starts
+	// once we hold it.
+	waitCtx, waitCancel := context.WithCancel(parent)
+	release, err := acquireYubiKey(waitCtx, c.watchDenyFile(waitCtx, startTime))
+	waitCancel()
+	if errors.Is(err, errDenied) {
+		log.Printf("confirm: explicitly denied via deny file")
+		return false, "Confirmation explicitly cancelled"
+	} else if err != nil {
+		return false, "SSH client disconnected; confirmation cancelled"
+	}
+	defer release()
+
 	// Get YubiKey serial
 	serial := c.getSerial()
 	if serial == "" {
@@ -180,7 +236,7 @@ func (c *ConfirmConfig) confirmHMAC(parent context.Context) (bool, string) {
 		hmacCh <- hmacResult{strings.TrimSpace(string(out)), err}
 	}()
 
-	denyCh := c.watchDenyFile(ctx, time.Now())
+	denyCh := c.watchDenyFile(ctx, startTime)
 
 	select {
 	case r := <-hmacCh:
@@ -277,6 +333,12 @@ func (c *ConfirmConfig) VerifyPIN(ctx context.Context, pin []byte) bool {
 	if expected == "" {
 		return false
 	}
+
+	release, err := acquireYubiKey(ctx, nil)
+	if err != nil {
+		return false
+	}
+	defer release()
 
 	cmd := exec.CommandContext(ctx, getResolvedBins().ykchalresp, "-"+c.PINSlot, "-i-")
 	cmd.Stdin = bytes.NewReader(pin)

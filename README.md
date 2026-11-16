@@ -473,9 +473,9 @@ Even without filesystem hardening, the proxy provides substantial value:
 - **Policy enforcement** for all software that uses `SSH_AUTH_SOCK`
   (ssh, git, rsync, and nearly all SSH clients)
 - **Mutation blocking** (add/remove/lock/unlock always denied)
-- **Confirmation rate limiting** — concurrent pending confirmations
-  are capped (`confirm.max_pending`, default 3) to prevent same-user
-  processes from flooding the confirmation UI
+- **Confirmation rate limiting** — confirmations take the YubiKey one
+  at a time, and pending ones are capped (`confirm.max_pending`,
+  default 8) so same-user processes cannot queue without bound
 
 Most real-world threats (AI coding tools, scripts, forwarded sessions)
 use `SSH_AUTH_SOCK` and will be subject to the proxy's policy.  Direct

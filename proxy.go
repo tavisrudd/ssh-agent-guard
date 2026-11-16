@@ -14,8 +14,8 @@ import (
 )
 
 // pendingConfirms tracks the number of in-flight confirmation requests
-// across all connections. Used with ConfirmConfig.MaxPending to prevent
-// same-user processes from flooding the confirmation UI.
+// (waiting for the YubiKey or holding it) across all connections. Used
+// with ConfirmConfig.MaxPending to bound the queue.
 var pendingConfirms atomic.Int32
 
 const maxSessionBindings = 16
@@ -108,7 +108,8 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 		return result
 	}
 
-	// Rate-limit concurrent confirmations to prevent prompt flooding.
+	// Cap pending confirmations (waiting for the YubiKey or holding it) so
+	// a same-user process cannot queue requests without bound.
 	if max := p.confirmCfg.MaxPending; max > 0 {
 		if n := pendingConfirms.Add(1); n > int32(max) {
 			pendingConfirms.Add(-1)
@@ -133,7 +134,7 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 	// No display + no YubiKey → deny
 	if hasActiveDisplay() {
 		result.ConfirmMethod = "touch"
-	} else if p.confirmCfg.HasYubiKey() {
+	} else if p.confirmCfg.HasYubiKey(p.ctx) {
 		result.ConfirmMethod = "pin"
 	} else {
 		result.ConfirmMethod = "missing"

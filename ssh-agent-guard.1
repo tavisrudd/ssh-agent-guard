@@ -272,9 +272,9 @@ denied requests
 .IP \(bu 2
 \fBMutation blocking\fP (add/remove/lock/unlock always denied)
 .IP \(bu 2
-\fBConfirmation rate limiting\fP — concurrent pending confirmations
-are capped (\fBconfirm.max_pending\fR, default 3) to prevent same-user
-processes from flooding the confirmation UI
+\fBConfirmation rate limiting\fP — confirmations take the YubiKey one
+at a time, and pending ones are capped (\fBconfirm.max_pending\fR,
+default 8) so same-user processes cannot queue without bound
 
 .PP
 Most real-world threats (AI coding tools, scripts, forwarded sessions)

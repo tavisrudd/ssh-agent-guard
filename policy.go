@@ -108,9 +108,11 @@ type ConfirmPolicyYAML struct {
 	// display is available (e.g. SSH session).
 	PIN PINConfirmYAML `yaml:"pin,omitempty"`
 
-	// MaxPending limits the number of concurrent pending confirmations.
-	// Excess requests are immediately denied. Prevents same-user processes
-	// from flooding the confirmation UI. 0 means unlimited. Default: 3.
+	// MaxPending limits the number of pending confirmations: requests
+	// waiting their turn on the YubiKey (one at a time) plus the one
+	// holding it. Excess requests are immediately denied. Prevents a
+	// same-user process from queueing requests without bound. 0 means
+	// unlimited. Default: 8.
 	MaxPending *int `yaml:"max_pending,omitempty"`
 }
 

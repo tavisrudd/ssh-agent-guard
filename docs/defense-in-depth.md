@@ -77,9 +77,11 @@ Landlock (unprivileged, no root needed), systemd
 ## Confirmation rate limiting
 
 A same-user process can spam sign requests that trigger confirmation
-prompts, degrading the user experience.  The proxy
-limits concurrent pending confirmations via `confirm.max_pending`
-(default: 3).  Requests beyond this limit are immediately denied and
+prompts, degrading the user experience.  Confirmations take the YubiKey
+one at a time (it answers one process at a time), so the rest wait their
+turn; the proxy caps the requests waiting or confirming via
+`confirm.max_pending` (default: 8).  Requests beyond this limit are
+immediately denied and
 logged with deny forensics (process age, sign request count, rule
 trace).  See the [policy guide](policy-guide.md#confirmation-rate-limiting)
 for configuration.

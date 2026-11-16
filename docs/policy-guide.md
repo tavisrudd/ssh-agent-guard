@@ -374,13 +374,19 @@ $ ssh-agent-guard check --pid 4521 --key SHA256:abc123
 
 ## Confirmation rate limiting
 
-The `confirm.max_pending` setting limits the number of concurrent
-pending confirmations.  When the limit is reached, additional confirm
-requests are immediately denied.
+Confirmations use the YubiKey one at a time: it answers one process at
+a time, so concurrent requests (git pushing several repositories at once)
+wait their turn and are prompted one after another.  Each request's touch
+timeout starts when its turn comes, and touching the deny file cancels
+waiting requests too.
+
+The `confirm.max_pending` setting limits the number of pending
+confirmations, waiting or confirming.  When the limit is reached,
+additional confirm requests are immediately denied.
 
 ```yaml
 confirm:
-  max_pending: 3    # default
+  max_pending: 8    # default
 ```
 
 This prevents a same-user process from flooding the confirmation UI
@@ -389,12 +395,12 @@ with rapid sign requests.  Rate-limited denials are logged with
 below), and appear in the journal as:
 
 ```
-confirm: rate-limited (3/3 pending), denying npm → unknown
+confirm: rate-limited (8/8 pending), denying npm → unknown
 ```
 
-Set to `0` to disable the limit entirely.  The default of 3 is
-sufficient for normal use — even aggressive git operations rarely
-produce more than 2 concurrent sign requests.
+Set to `0` to disable the limit entirely.  Parallel tools can exceed the
+default; raise it for them, or have them share one connection per host
+(ssh `ControlMaster`) so each host costs one confirmation.
 
 ## Tips
 

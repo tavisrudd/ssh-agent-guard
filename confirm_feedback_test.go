@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMissingEnrollmentFeedback(t *testing.T) {
@@ -82,5 +83,87 @@ func TestConfirmationFailureReachesStatusAndEvent(t *testing.T) {
 	}
 	if event.ConfirmError != reason {
 		t.Fatalf("failure missing from event: %s", data)
+	}
+}
+
+// Parallel sign requests take the YubiKey one at a time: the fake ykinfo
+// and ykchalresp fail when another holds the "device", as the real key
+// does, so every request succeeds only if access is serialized.
+func TestConcurrentConfirmationsShareYubiKey(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, "device")
+	busy := "mkdir " + lock + " 2>/dev/null || exit 1\ntrap 'rmdir " + lock + "' EXIT\n"
+	info := filepath.Join(dir, "ykinfo")
+	chal := filepath.Join(dir, "ykchalresp")
+	if err := os.WriteFile(info, []byte("#!/bin/sh\n"+busy+"sleep 0.05\necho 'serial: 11583827'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chal, []byte("#!/bin/sh\n"+busy+"sleep 0.1\necho expected\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "11583827.response"), []byte("expected\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := resolvedBinsVal.Load()
+	resolvedBinsVal.Store(&resolvedBins{ykinfo: info, ykchalresp: chal})
+	t.Cleanup(func() { resolvedBinsVal.Store(old) })
+	cfg := DefaultConfirmConfig()
+	cfg.ResponseDir = dir
+	cfg.DenyPath = filepath.Join(dir, "deny")
+
+	const n = 5
+	type res struct {
+		ok     bool
+		reason string
+	}
+	results := make(chan res, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			ok, reason := cfg.confirmHMAC(context.Background())
+			results <- res{ok, reason}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		if r := <-results; !r.ok {
+			t.Errorf("concurrent confirmation failed: %s", r.reason)
+		}
+	}
+}
+
+// A request waiting for the YubiKey ends when its client disconnects.
+func TestYubiKeyWaitCancelled(t *testing.T) {
+	release, err := acquireYubiKey(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	cfg := DefaultConfirmConfig()
+	cfg.DenyPath = filepath.Join(t.TempDir(), "deny")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	ok, reason := cfg.confirmHMAC(ctx)
+	if ok || !strings.Contains(reason, "disconnected") {
+		t.Fatalf("got ok=%v reason=%q, want a disconnect while waiting", ok, reason)
+	}
+}
+
+// Touching the deny file cancels a request still waiting for the YubiKey.
+func TestYubiKeyWaitDenied(t *testing.T) {
+	release, err := acquireYubiKey(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	cfg := DefaultConfirmConfig()
+	cfg.DenyPath = filepath.Join(t.TempDir(), "deny")
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		os.WriteFile(cfg.DenyPath, nil, 0600)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ok, reason := cfg.confirmHMAC(ctx)
+	if ok || !strings.Contains(reason, "cancelled") || strings.Contains(reason, "disconnected") {
+		t.Fatalf("got ok=%v reason=%q, want an explicit cancel", ok, reason)
 	}
 }
