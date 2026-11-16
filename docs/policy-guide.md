@@ -377,8 +377,11 @@ $ ssh-agent-guard check --pid 4521 --key SHA256:abc123
 Confirmations use the YubiKey one at a time: it answers one process at
 a time, so concurrent requests (git pushing several repositories at once)
 wait their turn and are prompted one after another.  Each request's touch
-timeout starts when its turn comes, and touching the deny file cancels
-waiting requests too.
+timeout starts when its turn comes.  The status bar names only the request
+holding the key, so a touch always approves the request shown; the others
+add a count ("+2 waiting").  Touching the deny file cancels waiting
+requests too, and a request whose client disconnects (a Ctrl-C'd push)
+leaves the queue at once.
 
 The `confirm.max_pending` setting limits the number of pending
 confirmations, waiting or confirming.  When the limit is reached,

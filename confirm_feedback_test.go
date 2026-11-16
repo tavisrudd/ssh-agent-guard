@@ -25,7 +25,7 @@ func TestMissingEnrollmentFeedback(t *testing.T) {
 	t.Cleanup(func() { resolvedBinsVal.Store(old) })
 	cfg := DefaultConfirmConfig()
 	cfg.ResponseDir = dir
-	ok, reason := cfg.confirmHMAC(context.Background())
+	ok, reason := cfg.confirmHMAC(context.Background(), nil)
 	if ok {
 		t.Fatal("unenrolled key was accepted")
 	}
@@ -119,7 +119,7 @@ func TestConcurrentConfirmationsShareYubiKey(t *testing.T) {
 	results := make(chan res, n)
 	for i := 0; i < n; i++ {
 		go func() {
-			ok, reason := cfg.confirmHMAC(context.Background())
+			ok, reason := cfg.confirmHMAC(context.Background(), nil)
 			results <- res{ok, reason}
 		}()
 	}
@@ -141,7 +141,7 @@ func TestYubiKeyWaitCancelled(t *testing.T) {
 	cfg.DenyPath = filepath.Join(t.TempDir(), "deny")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	ok, reason := cfg.confirmHMAC(ctx)
+	ok, reason := cfg.confirmHMAC(ctx, nil)
 	if ok || !strings.Contains(reason, "disconnected") {
 		t.Fatalf("got ok=%v reason=%q, want a disconnect while waiting", ok, reason)
 	}
@@ -162,7 +162,7 @@ func TestYubiKeyWaitDenied(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ok, reason := cfg.confirmHMAC(ctx)
+	ok, reason := cfg.confirmHMAC(ctx, nil)
 	if ok || !strings.Contains(reason, "cancelled") || strings.Contains(reason, "disconnected") {
 		t.Fatalf("got ok=%v reason=%q, want an explicit cancel", ok, reason)
 	}

@@ -96,7 +96,7 @@ func runDoctor(cli *CLI, touch bool, w io.Writer) error {
 			fmt.Fprintln(w, "OK: enrollment response exists (use --touch to verify it against the key)")
 			if touch {
 				fmt.Fprintln(w, "Touch the YubiKey when it blinks.")
-				if ok, reason := cfg.confirmHMAC(context.Background()); !ok {
+				if ok, reason := cfg.confirmHMAC(context.Background(), nil); !ok {
 					fail("%s", reason)
 				} else {
 					fmt.Fprintln(w, "OK: enrolled HMAC response verified")

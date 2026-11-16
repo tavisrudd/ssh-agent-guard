@@ -140,18 +140,33 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 		result.ConfirmMethod = "missing"
 	}
 
-	// Show confirming state on status bar (unless immediate deny)
-	if result.ConfirmMethod != "missing" {
-		p.logger.SetConfirming(p.caller, key, p.session, result)
-	}
-
 	switch result.ConfirmMethod {
 	case "touch":
+		// The bar shows this request only once it holds the YubiKey, so
+		// the touch approves the request shown. Until then it is counted
+		// as waiting.
 		log.Printf("confirm: method=touch for %s → %s", p.caller.Name, dest)
-		ok, result.ConfirmError = p.confirmCfg.confirmHMAC(p.ctx)
+		var id uint64
+		waiting := true
+		p.logger.AddWaiting(1)
+		turn := &confirmTurn{
+			start: func() {
+				waiting = false
+				p.logger.AddWaiting(-1)
+				id = p.logger.SetConfirming(p.caller, key, p.session, result)
+			},
+			end: func() { p.logger.EndConfirming(id) },
+		}
+		ok, result.ConfirmError = p.confirmCfg.confirmHMAC(p.ctx, turn)
+		if waiting { // denied or disconnected before its turn
+			p.logger.AddWaiting(-1)
+		}
 	case "pin":
+		// Each PIN prompt shows its own request; the PIN popup names it.
 		log.Printf("confirm: method=pin for %s → %s", p.caller.Name, dest)
+		id := p.logger.SetConfirming(p.caller, key, p.session, result)
 		ok = p.confirmCfg.ConfirmPIN(p.ctx, p.caller, p.session, key, req)
+		p.logger.EndConfirming(id)
 	default:
 		log.Printf("confirm: method=missing (no display, no YubiKey) for %s → %s", p.caller.Name, dest)
 		ok = false

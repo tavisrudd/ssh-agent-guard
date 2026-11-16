@@ -126,6 +126,17 @@ type Logger struct {
 	previous      *logEvent // stored for current.yaml previous section
 	policy        *Policy   // for config status in current.yaml
 	lastLoggedSHA string    // SHA256 of last config snapshot written (skip duplicates)
+
+	// Confirmation display. Only the request holding the confirmation (its
+	// YubiKey turn, or its PIN prompt) is shown as confirming, so a touch
+	// always approves the request on the bar; requests waiting for the
+	// YubiKey only add a count. Writes of the idle state (a finished
+	// request, a mutation) keep the holder on the bar while it holds.
+	active   *currentStatus // the holder's status, nil when none
+	activeID uint64
+	nextID   uint64
+	waiting  int    // requests waiting for the YubiKey
+	idleText string // last idle text, to re-render with a new count
 }
 
 func NewLogger(stateDir string, policy *Policy) *Logger {
@@ -296,9 +307,10 @@ func (l *Logger) UpdateSignStatus(ctx *CallerContext, key ssh.PublicKey, session
 		ctx.Name, dest, via, requestSuffix(result.Request), result.Action, result.RuleName, fingerprint[:19], ctx.PID, container)
 }
 
-// SetConfirming updates current.yaml to show a pending confirmation.
-// Called from evalAndConfirm before the actual confirmation method runs.
-func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result EvalResult) {
+// SetConfirming makes this request the one shown as confirming and renders
+// it before returning. Called when the request holds the YubiKey (touch) or
+// opens its PIN prompt. Returns an id for EndConfirming.
+func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result EvalResult) uint64 {
 	dest := SignDest(ctx, session)
 	summary := buildSummary(ctx, session, signDetail(dest, result.Request))
 
@@ -316,14 +328,49 @@ func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *S
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	status := currentStatus{
-		State:    "confirming",
-		Text:     text,
-		Pending:  pending,
-		Previous: l.previous,
+	l.nextID++
+	l.active = &currentStatus{
+		State:   "confirming",
+		Text:    text,
+		Pending: pending,
 	}
+	l.activeID = l.nextID
+	l.writeCurrentAndRender(l.activeStatus())
+	return l.activeID
+}
 
-	l.writeCurrentAndRender(&status)
+// EndConfirming stops showing request id as confirming, if it still is.
+// The next idle write (LogSign) renders the result.
+func (l *Logger) EndConfirming(id uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.active != nil && l.activeID == id {
+		l.active = nil
+	}
+}
+
+// AddWaiting changes the count of requests waiting for the YubiKey and
+// re-renders it.
+func (l *Logger) AddWaiting(delta int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.waiting += delta
+	if l.active != nil {
+		l.writeCurrentAndRender(l.activeStatus())
+	} else {
+		l.writeIdle(l.idleText)
+	}
+}
+
+// activeStatus is the holder's status with the previous result and the
+// waiting count. Must hold l.mu and l.active != nil.
+func (l *Logger) activeStatus() *currentStatus {
+	status := *l.active
+	status.Previous = l.previous
+	if l.waiting > 0 {
+		status.Text = fmt.Sprintf("%s (+%d waiting)", status.Text, l.waiting)
+	}
+	return &status
 }
 
 // LogSign writes the YAML log file and updates current.yaml with full details.
@@ -524,7 +571,18 @@ func (l *Logger) LogConfigChange(result LoadResult) {
 // writeIdle writes current.yaml with state=idle + stored previous. Must hold l.mu.
 // text is the display summary for the render script's linger period.
 // Render runs async — the sign response is not blocked by status bar updates.
+// writeIdle shows text as the idle state, unless a request holds the
+// confirmation: then the holder stays on the bar. Must hold l.mu.
 func (l *Logger) writeIdle(text string) {
+	l.idleText = text
+	if l.active != nil {
+		l.writeCurrentFile(l.activeStatus())
+		go l.render()
+		return
+	}
+	if l.waiting > 0 {
+		text = fmt.Sprintf("%s (%d waiting for YubiKey)", text, l.waiting)
+	}
 	status := currentStatus{
 		State:    "idle",
 		Text:     text,

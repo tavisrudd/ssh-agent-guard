@@ -136,6 +136,14 @@ func getExtraBinPaths() []string {
 	return nil
 }
 
+// systemBinDirs are findBin's system defaults. Tests replace them (TestMain)
+// so no test can reach the real ykinfo or ykchalresp.
+var systemBinDirs = []string{
+	"/run/current-system/sw/bin",
+	"/usr/bin",
+	"/usr/local/bin",
+}
+
 // findBin locates a binary by checking policy paths, then system defaults, then PATH.
 func findBin(name string) string {
 	// Policy-configured paths first
@@ -146,11 +154,7 @@ func findBin(name string) string {
 		}
 	}
 	// System defaults
-	for _, dir := range []string{
-		"/run/current-system/sw/bin",
-		"/usr/bin",
-		"/usr/local/bin",
-	} {
+	for _, dir := range systemBinDirs {
 		p := filepath.Join(dir, name)
 		if _, err := os.Stat(p); err == nil {
 			return p
@@ -182,12 +186,22 @@ func (c *ConfirmConfig) HasYubiKey(ctx context.Context) bool {
 // Races ykchalresp against the deny file — touching the deny file cancels immediately.
 // The confirming state is already set on the status bar by the caller.
 func (c *ConfirmConfig) ConfirmHMAC(parent context.Context) bool {
-	ok, _ := c.confirmHMAC(parent)
+	ok, _ := c.confirmHMAC(parent, nil)
 	return ok
 }
 
-// confirmHMAC returns an actionable reason when confirmation fails.
-func (c *ConfirmConfig) confirmHMAC(parent context.Context) (bool, string) {
+// confirmTurn hooks a request's turn on the YubiKey: start runs once the
+// request holds the key and before the key is used (so the status bar
+// names the request the touch will approve); end runs before the key is
+// released (so the next request's start cannot be overwritten).
+type confirmTurn struct {
+	start func()
+	end   func()
+}
+
+// confirmHMAC returns an actionable reason when confirmation fails. turn
+// may be nil.
+func (c *ConfirmConfig) confirmHMAC(parent context.Context, turn *confirmTurn) (bool, string) {
 	// The deny file cancels from the request's start, including while it
 	// waits for the YubiKey.
 	startTime := time.Now()
@@ -205,6 +219,10 @@ func (c *ConfirmConfig) confirmHMAC(parent context.Context) (bool, string) {
 		return false, "SSH client disconnected; confirmation cancelled"
 	}
 	defer release()
+	if turn != nil {
+		turn.start()
+		defer turn.end() // runs before release
+	}
 
 	// Get YubiKey serial
 	serial := c.getSerial()
@@ -232,6 +250,8 @@ func (c *ConfirmConfig) confirmHMAC(parent context.Context) (bool, string) {
 	hmacCh := make(chan hmacResult, 1)
 	go func() {
 		cmd := exec.CommandContext(ctx, getResolvedBins().ykchalresp, "-"+c.Slot, c.Challenge)
+		// Bound the wait for a killed ykchalresp's pipes.
+		cmd.WaitDelay = time.Second
 		out, err := cmd.Output()
 		hmacCh <- hmacResult{strings.TrimSpace(string(out)), err}
 	}()
@@ -259,9 +279,11 @@ func (c *ConfirmConfig) confirmHMAC(parent context.Context) (bool, string) {
 		return false, fmt.Sprintf("YubiKey %s response mismatch; check enrolled response and challenge", serial)
 	case <-denyCh:
 		cancel() // kill ykchalresp
+		<-hmacCh // and let it exit before the next request takes the key
 		log.Printf("confirm: explicitly denied via deny file")
 		return false, "Confirmation explicitly cancelled"
 	case <-ctx.Done():
+		<-hmacCh // ykchalresp is killed with ctx; let it exit before release
 		if ctx.Err() == context.DeadlineExceeded {
 			log.Printf("confirm: YubiKey timeout after %s", c.Timeout)
 		}
