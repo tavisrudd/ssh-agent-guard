@@ -507,6 +507,9 @@ func hasUsableSwayOutput(data []byte, excludedNames string) (bool, error) {
 	return false, nil
 }
 
+// hasActiveDisplayFn is hasActiveDisplay, replaceable in tests.
+var hasActiveDisplayFn = hasActiveDisplay
+
 // hasActiveDisplay checks whether the local sway session has a usable display.
 // Returns false if swaylock is active, no active outputs, or no Sway IPC socket
 // is reachable.

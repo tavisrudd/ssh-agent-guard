@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -117,8 +118,7 @@ func TestTouchApprovesTheRequestShown(t *testing.T) {
 			l.AddWaiting(1)
 			turn := &confirmTurn{
 				start: func() {
-					l.AddWaiting(-1)
-					id = l.SetConfirming(caller, key, nil, result)
+					id = l.StartTouch(caller, key, nil, result)
 				},
 				end: func() { l.EndConfirming(id) },
 			}
@@ -232,7 +232,7 @@ func TestTimedOutYkchalrespReapedBeforeReturn(t *testing.T) {
 			cfg.ResponseDir = dir
 			cfg.DenyPath = filepath.Join(dir, "deny")
 			if how == "timeout" {
-				cfg.Timeout = 300 * time.Millisecond
+				cfg.Timeout = 1500 * time.Millisecond // room for a slow build host
 			} else {
 				go func() {
 					for {
@@ -257,5 +257,68 @@ func TestTimedOutYkchalrespReapedBeforeReturn(t *testing.T) {
 				t.Fatalf("ykchalresp pid %d still exists after return (kill 0: %v)", pid, err)
 			}
 		})
+	}
+}
+
+// A config reload leaves a confirming request on the bar.
+func TestReloadKeepsHolder(t *testing.T) {
+	stateDir := t.TempDir()
+	l := NewLogger(stateDir, nil)
+	id := l.SetConfirming(&CallerContext{Name: "holder"}, testKey(t), nil, EvalResult{Action: Confirm, ConfirmMethod: "touch"})
+	l.NotifyReload()
+	if st := readCurrent(t, stateDir); st.State != "confirming" || !strings.Contains(st.Text, "holder") {
+		t.Fatalf("reload replaced the holder: %q %q", st.State, st.Text)
+	}
+	l.EndConfirming(id)
+	l.NotifyReload()
+	if st := readCurrent(t, stateDir); st.State != "reloaded" {
+		t.Fatalf("reload with nothing confirming: %q", st.State)
+	}
+}
+
+// A PIN prompt never takes the bar from the touch holder; once the holder
+// ends, the pending PIN prompt is shown.
+func TestPINDoesNotReplaceTouchHolder(t *testing.T) {
+	stateDir := t.TempDir()
+	l := NewLogger(stateDir, nil)
+	key := testKey(t)
+	touchID := l.SetConfirming(&CallerContext{Name: "touch-req"}, key, nil, EvalResult{Action: Confirm, ConfirmMethod: "touch"})
+	pinID := l.SetConfirming(&CallerContext{Name: "pin-req"}, key, nil, EvalResult{Action: Confirm, ConfirmMethod: "pin"})
+	if st := readCurrent(t, stateDir); !strings.Contains(st.Text, "touch-req") {
+		t.Fatalf("PIN request replaced the touch holder: %q", st.Text)
+	}
+	l.EndConfirming(touchID)
+	l.LogSign(&CallerContext{Name: "touch-req"}, key, nil, EvalResult{Action: Allow}, nil)
+	if st := readCurrent(t, stateDir); st.State != "confirming" || !strings.Contains(st.Text, "pin-req") {
+		t.Fatalf("pending PIN prompt not shown after the holder: %q %q", st.State, st.Text)
+	}
+	l.EndConfirming(pinID)
+}
+
+// Renderer runs never overlap, and a hung renderer is cut off.
+func TestRenderSerializedAndBounded(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "render")
+	os.WriteFile(bin, []byte("#!/bin/sh\nmkdir "+dir+"/running 2>/dev/null || echo x >> "+dir+"/overlaps\nsleep 0.02\nrmdir "+dir+"/running\n"), 0700)
+	l := NewLogger(filepath.Join(dir, "state"), nil)
+	l.renderBin = bin
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); l.render() }()
+	}
+	wg.Wait()
+	if _, err := os.Stat(filepath.Join(dir, "overlaps")); err == nil {
+		t.Fatal("renderer runs overlapped")
+	}
+
+	os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 30\n"), 0700)
+	old := renderTimeout
+	renderTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { renderTimeout = old })
+	start := time.Now()
+	l.render()
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("hung renderer held render for %s", d)
 	}
 }

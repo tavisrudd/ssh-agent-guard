@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -127,16 +128,23 @@ type Logger struct {
 	policy        *Policy   // for config status in current.yaml
 	lastLoggedSHA string    // SHA256 of last config snapshot written (skip duplicates)
 
-	// Confirmation display. Only the request holding the confirmation (its
-	// YubiKey turn, or its PIN prompt) is shown as confirming, so a touch
-	// always approves the request on the bar; requests waiting for the
-	// YubiKey only add a count. Writes of the idle state (a finished
-	// request, a mutation) keep the holder on the bar while it holds.
-	active   *currentStatus // the holder's status, nil when none
-	activeID uint64
+	// Confirmation display. The touch holder (the request holding the
+	// YubiKey) always owns the bar, so a touch approves the request shown.
+	// Pending PIN prompts show only when no touch holder does, newest
+	// first; each PIN popup names its own request. Requests waiting for the
+	// YubiKey add a count. Other writes (results, mutations, reloads) leave
+	// a confirming request on the bar.
+	touch    *currentStatus // the touch holder, nil when none
+	touchID  uint64
+	pins     map[uint64]*currentStatus // pending PIN prompts by id
 	nextID   uint64
 	waiting  int    // requests waiting for the YubiKey
 	idleText string // last idle text, to re-render with a new count
+
+	// renderMu runs the renderer one at a time. Each run reads
+	// current.yaml afresh and replaces the previous run's decay timer, so
+	// the last run shows the latest state.
+	renderMu sync.Mutex
 }
 
 func NewLogger(stateDir string, policy *Policy) *Logger {
@@ -307,10 +315,21 @@ func (l *Logger) UpdateSignStatus(ctx *CallerContext, key ssh.PublicKey, session
 		ctx.Name, dest, via, requestSuffix(result.Request), result.Action, result.RuleName, fingerprint[:19], ctx.PID, container)
 }
 
-// SetConfirming makes this request the one shown as confirming and renders
-// it before returning. Called when the request holds the YubiKey (touch) or
-// opens its PIN prompt. Returns an id for EndConfirming.
+// SetConfirming records a confirming request and renders the bar before
+// returning: a touch request (ConfirmMethod "touch") when it holds the
+// YubiKey, a PIN request when its prompt opens. Returns an id for
+// EndConfirming.
 func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result EvalResult) uint64 {
+	return l.setConfirming(ctx, key, session, result, false)
+}
+
+// StartTouch is SetConfirming for a touch request that was counted as
+// waiting: it leaves the count and takes the bar in one step.
+func (l *Logger) StartTouch(ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result EvalResult) uint64 {
+	return l.setConfirming(ctx, key, session, result, true)
+}
+
+func (l *Logger) setConfirming(ctx *CallerContext, key ssh.PublicKey, session *SessionBindInfo, result EvalResult, wasWaiting bool) uint64 {
 	dest := SignDest(ctx, session)
 	summary := buildSummary(ctx, session, signDetail(dest, result.Request))
 
@@ -329,24 +348,36 @@ func (l *Logger) SetConfirming(ctx *CallerContext, key ssh.PublicKey, session *S
 	defer l.mu.Unlock()
 
 	l.nextID++
-	l.active = &currentStatus{
+	id := l.nextID
+	st := &currentStatus{
 		State:   "confirming",
 		Text:    text,
 		Pending: pending,
 	}
-	l.activeID = l.nextID
-	l.writeCurrentAndRender(l.activeStatus())
-	return l.activeID
+	if wasWaiting {
+		l.waiting--
+	}
+	if result.ConfirmMethod == "touch" {
+		l.touch, l.touchID = st, id
+	} else {
+		if l.pins == nil {
+			l.pins = make(map[uint64]*currentStatus)
+		}
+		l.pins[id] = st
+	}
+	l.writeCurrentAndRender(l.confirmingStatus())
+	return id
 }
 
-// EndConfirming stops showing request id as confirming, if it still is.
-// The next idle write (LogSign) renders the result.
+// EndConfirming drops request id from the confirming requests, if it is
+// still there. The next write (LogSign) renders what remains.
 func (l *Logger) EndConfirming(id uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.active != nil && l.activeID == id {
-		l.active = nil
+	if l.touch != nil && l.touchID == id {
+		l.touch = nil
 	}
+	delete(l.pins, id)
 }
 
 // AddWaiting changes the count of requests waiting for the YubiKey and
@@ -355,17 +386,30 @@ func (l *Logger) AddWaiting(delta int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.waiting += delta
-	if l.active != nil {
-		l.writeCurrentAndRender(l.activeStatus())
+	if cs := l.confirmingStatus(); cs != nil {
+		l.writeCurrentAndRender(cs)
 	} else {
 		l.writeIdle(l.idleText)
 	}
 }
 
-// activeStatus is the holder's status with the previous result and the
-// waiting count. Must hold l.mu and l.active != nil.
-func (l *Logger) activeStatus() *currentStatus {
-	status := *l.active
+// confirmingStatus is the status the bar shows while a request is
+// confirming (the touch holder, else the newest PIN prompt), with the
+// previous result and the waiting count; nil when none is. Must hold l.mu.
+func (l *Logger) confirmingStatus() *currentStatus {
+	shown := l.touch
+	if shown == nil {
+		var newest uint64
+		for id, st := range l.pins {
+			if id > newest {
+				newest, shown = id, st
+			}
+		}
+	}
+	if shown == nil {
+		return nil
+	}
+	status := *shown
 	status.Previous = l.previous
 	if l.waiting > 0 {
 		status.Text = fmt.Sprintf("%s (+%d waiting)", status.Text, l.waiting)
@@ -475,6 +519,12 @@ func (l *Logger) NotifyReload() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// A confirming request keeps the bar: the key may be blinking for it.
+	if cs := l.confirmingStatus(); cs != nil {
+		l.writeCurrentAndRender(cs)
+		return
+	}
+
 	status := currentStatus{
 		State:    "reloaded",
 		Text:     "config reloaded",
@@ -575,8 +625,8 @@ func (l *Logger) LogConfigChange(result LoadResult) {
 // confirmation: then the holder stays on the bar. Must hold l.mu.
 func (l *Logger) writeIdle(text string) {
 	l.idleText = text
-	if l.active != nil {
-		l.writeCurrentFile(l.activeStatus())
+	if cs := l.confirmingStatus(); cs != nil {
+		l.writeCurrentFile(cs)
 		go l.render()
 		return
 	}
@@ -612,15 +662,31 @@ func (l *Logger) writeCurrentFile(status *currentStatus) {
 		log.Printf("yaml marshal current: %v", err)
 		return
 	}
+	// Atomically: the renderer may read it at any moment.
 	currentFile := filepath.Join(l.stateDir, "current.yaml")
-	if err := os.WriteFile(currentFile, data, 0600); err != nil {
-		log.Printf("write %s: %v", currentFile, err)
+	tmp := currentFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		log.Printf("write %s: %v", tmp, err)
+		return
+	}
+	if err := os.Rename(tmp, currentFile); err != nil {
+		log.Printf("rename %s: %v", currentFile, err)
 	}
 }
 
 // render calls the external render helper to produce i3status + tmux-status.
+// renderTimeout bounds a renderer run: the synchronous render runs under
+// l.mu while a request holds the YubiKey, so a hung renderer must not stop
+// all signing.
+var renderTimeout = 5 * time.Second
+
 func (l *Logger) render() {
-	cmd := exec.Command(l.renderBin)
+	l.renderMu.Lock()
+	defer l.renderMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), renderTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, l.renderBin)
+	cmd.WaitDelay = time.Second
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		log.Printf("render-status: %v", err)

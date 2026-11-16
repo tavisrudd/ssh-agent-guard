@@ -186,10 +186,10 @@ func handleConnection(clientConn net.Conn, upstreamPath string, logger *Logger, 
 	}
 	defer upstreamConn.Close()
 
-	// Context cancelled when the client hangs up or this handler returns.
+	// Context cancelled when this handler returns. Requests waiting for
+	// confirmation also watch the client for hangup (evalAndConfirm).
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go watchHangup(ctx, clientConn, cancel)
 
 	upstream := agent.NewClient(upstreamConn)
 	proxy := &ProxyAgent{
@@ -200,6 +200,7 @@ func handleConnection(clientConn net.Conn, upstreamPath string, logger *Logger, 
 		policy:     policy,
 		confirmCfg: confirmCfg,
 		ctx:        ctx,
+		conn:       clientConn,
 	}
 
 	if err := agent.ServeAgent(proxy, clientConn); err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"sync/atomic"
 	"time"
 
@@ -32,7 +33,8 @@ type ProxyAgent struct {
 	session        *SessionBindInfo // aggregate context for the authenticated binding chain
 	bindings       []*SessionBindInfo
 	sessionInvalid bool
-	ctx            context.Context // cancelled when client connection closes
+	ctx            context.Context // cancelled when the connection handler returns
+	conn           net.Conn        // the client, watched for hangup while confirming
 	signCount      int             // number of sign requests on this connection
 }
 
@@ -125,6 +127,16 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 		defer pendingConfirms.Add(-1)
 	}
 
+	// ServeAgent reads nothing while this request waits, so watch the
+	// client for hangup meanwhile: a disconnected client's request leaves
+	// the YubiKey queue at once. Only while confirming, which max_pending
+	// bounds: the watcher holds an OS thread in poll.
+	ctx, cancel := context.WithCancel(p.ctx)
+	defer cancel()
+	if p.conn != nil {
+		go watchHangup(ctx, p.conn, cancel)
+	}
+
 	dest := SignDest(p.caller, p.session)
 	var ok bool
 
@@ -132,9 +144,9 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 	// Active display → user is at the keyboard → YubiKey touch
 	// No display + YubiKey → PIN via tmux popup
 	// No display + no YubiKey → deny
-	if hasActiveDisplay() {
+	if hasActiveDisplayFn() {
 		result.ConfirmMethod = "touch"
-	} else if p.confirmCfg.HasYubiKey(p.ctx) {
+	} else if p.confirmCfg.HasYubiKey(ctx) {
 		result.ConfirmMethod = "pin"
 	} else {
 		result.ConfirmMethod = "missing"
@@ -152,12 +164,11 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 		turn := &confirmTurn{
 			start: func() {
 				waiting = false
-				p.logger.AddWaiting(-1)
-				id = p.logger.SetConfirming(p.caller, key, p.session, result)
+				id = p.logger.StartTouch(p.caller, key, p.session, result)
 			},
 			end: func() { p.logger.EndConfirming(id) },
 		}
-		ok, result.ConfirmError = p.confirmCfg.confirmHMAC(p.ctx, turn)
+		ok, result.ConfirmError = p.confirmCfg.confirmHMAC(ctx, turn)
 		if waiting { // denied or disconnected before its turn
 			p.logger.AddWaiting(-1)
 		}
@@ -165,7 +176,7 @@ func (p *ProxyAgent) evalAndConfirm(key ssh.PublicKey, data []byte) EvalResult {
 		// Each PIN prompt shows its own request; the PIN popup names it.
 		log.Printf("confirm: method=pin for %s → %s", p.caller.Name, dest)
 		id := p.logger.SetConfirming(p.caller, key, p.session, result)
-		ok = p.confirmCfg.ConfirmPIN(p.ctx, p.caller, p.session, key, req)
+		ok = p.confirmCfg.ConfirmPIN(ctx, p.caller, p.session, key, req)
 		p.logger.EndConfirming(id)
 	default:
 		log.Printf("confirm: method=missing (no display, no YubiKey) for %s → %s", p.caller.Name, dest)
