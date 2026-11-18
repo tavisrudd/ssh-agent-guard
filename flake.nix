@@ -19,7 +19,13 @@
           default = pkgs.buildGoModule {
             pname = "ssh-agent-guard";
             version = "0.1.0";
-            src = ./.;
+            # Build outputs stay out of the store copy even when this flake
+            # is referenced as path:, which copies ignored files too.
+            src = pkgs.lib.cleanSourceWith {
+              src = pkgs.lib.cleanSource ./.;
+              filter = path: _type: !(builtins.elem path
+                (map toString [ ./.direnv ./ssh-agent-guard ]));
+            };
             vendorHash = "sha256-3Y9l4Ys3c+XTUOB/UJcOrWDBfriDBqMx06Fq5GHdqW4=";
             ldflags = [ "-s" "-w" ];
 
